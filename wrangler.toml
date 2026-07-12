@@ -1,0 +1,33 @@
+name = "stormforge"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# --- Durable Objects: parallel scan orchestration ---
+[[durable_objects.bindings]]
+name = "SCAN_ORCHESTRATOR"
+class_name = "ScanOrchestrator"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ScanOrchestrator"]
+
+# --- KV: findings + scope persistence (create with `wrangler kv namespace create STORMFORGE_KV`) ---
+[[kv_namespaces]]
+binding = "STORMFORGE_KV"
+id = "REPLACE_WITH_YOUR_KV_ID"
+preview_id = "REPLACE_WITH_YOUR_PREVIEW_KV_ID"
+
+[vars]
+# Global rate limit (requests/sec) applied across all in-scope probing. Keep conservative.
+MAX_RPS = "5"
+# Per-scan concurrency cap.
+MAX_CONCURRENCY = "8"
+# "detect" = passive/safe checks only (default). This framework never enables active exploitation.
+SCAN_MODE = "detect"
+# Optional advisory LLM planner. Leave empty to disable. Never used to execute exploits — prioritization only.
+LLM_PLANNER_ENDPOINT = ""
+LLM_PLANNER_MODEL = ""
+
+# LLM_PLANNER_API_KEY is a SECRET, not a var. Set it with:
+#   wrangler secret put LLM_PLANNER_API_KEY
