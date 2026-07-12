@@ -1,0 +1,129 @@
+// Shared types for StormForge.
+//
+// Design note: everything downstream of the network layer operates on plain
+// `ProbeResult` objects. Detection checks are pure functions of a ProbeResult,
+// which keeps them deterministic, side-effect free, and unit-testable without
+// hitting the network.
+
+export type Severity = 'info' | 'low' | 'medium' | 'high' | 'critical';
+
+export const SEVERITY_ORDER: Record<Severity, number> = {
+  info: 0,
+  low: 1,
+  medium: 2,
+  high: 3,
+  critical: 4,
+};
+
+/** A single authorized scope: what the operator is permitted to test. */
+export interface Scope {
+  /** Bug-bounty program identifier, e.g. "acme-h1". Used for report formatting. */
+  program: string;
+  /** Reporting platform, drives the report template. */
+  platform: 'hackerone' | 'bugcrowd' | 'immunefi' | 'intigriti' | 'generic';
+  /**
+   * In-scope host patterns. Supports exact hosts ("api.acme.com") and single
+   * leading wildcard ("*.acme.com"). Anything not matching is refused.
+   */
+  inScope: string[];
+  /** Explicit out-of-scope hosts that override an inScope wildcard. */
+  outOfScope: string[];
+  /** If false, the scan refuses to run at all. Forces a conscious opt-in. */
+  authorized: boolean;
+  /** Free-text note, e.g. link to the program's rules-of-engagement. */
+  notes?: string;
+}
+
+/** Result of a single non-destructive HTTP probe. */
+export interface ProbeResult {
+  url: string;
+  method: string;
+  status: number;
+  /** Lower-cased header name -> value. */
+  headers: Record<string, string>;
+  /** Response body, truncated to a safe cap. May be empty for large/binary bodies. */
+  body: string;
+  /** Final URL after redirects, if different. */
+  finalUrl?: string;
+  /** Wall-clock milliseconds for the request. */
+  elapsedMs: number;
+  /** Populated when the probe failed (DNS, TLS, timeout, refused-by-scope). */
+  error?: string;
+}
+
+/** A detection produced by a Check. */
+export interface Finding {
+  /** Stable id derived from check + target + evidence; used for dedupe. */
+  id: string;
+  checkId: string;
+  title: string;
+  severity: Severity;
+  /** The affected URL/asset. */
+  target: string;
+  description: string;
+  /** Human-verifiable evidence (headers seen, snippet, etc.). No exploitation. */
+  evidence: string;
+  /** Concrete, manual reproduction steps. */
+  reproduction: string[];
+  /** Remediation guidance for the report. */
+  remediation: string;
+  /** Optional CWE id, e.g. "CWE-16". */
+  cwe?: string;
+  /** References (docs, CVEs). */
+  references: string[];
+  /**
+   * false = confirmed by the tool's own passive evidence.
+   * true  = a *candidate* that requires human validation before submission.
+   */
+  needsManualReview: boolean;
+  discoveredAt: string;
+}
+
+/** Interface every detection check implements. Pure and synchronous. */
+export interface Check {
+  id: string;
+  title: string;
+  /** CWE this check maps to, if any. */
+  cwe?: string;
+  /**
+   * Inspect a probe result and emit zero or more findings. Must not perform
+   * I/O or mutate the input. Never attempts exploitation.
+   */
+  run(probe: ProbeResult, ctx: CheckContext): Finding[];
+}
+
+export interface CheckContext {
+  scope: Scope;
+  /** Other probes gathered in the same scan, for cross-referencing. */
+  siblings?: ProbeResult[];
+}
+
+export interface ScanRequest {
+  scope: Scope;
+  /** Seed URLs/hosts to probe (all must be in scope). */
+  targets: string[];
+  /** Extra paths to probe on each target host, beyond the default wordlist. */
+  extraPaths?: string[];
+}
+
+export interface ScanReport {
+  scanId: string;
+  program: string;
+  startedAt: string;
+  finishedAt: string;
+  targetsProbed: number;
+  findings: Finding[];
+  /** Counts by severity for the dashboard. */
+  summary: Record<Severity, number>;
+}
+
+export interface Env {
+  SCAN_ORCHESTRATOR: DurableObjectNamespace;
+  STORMFORGE_KV: KVNamespace;
+  MAX_RPS: string;
+  MAX_CONCURRENCY: string;
+  SCAN_MODE: string;
+  LLM_PLANNER_ENDPOINT: string;
+  LLM_PLANNER_MODEL: string;
+  LLM_PLANNER_API_KEY?: string;
+}

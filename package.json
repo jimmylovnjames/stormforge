@@ -1,0 +1,29 @@
+{
+  "name": "stormforge",
+  "version": "1.0.0",
+  "description": "Scope-guarded, non-destructive bug-bounty recon and vulnerability detection framework for Cloudflare Workers + Durable Objects.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "bug-bounty",
+    "recon",
+    "vulnerability-detection",
+    "cloudflare-workers",
+    "durable-objects",
+    "security"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8",
+    "wrangler": "^3.100.0"
+  }
+}
