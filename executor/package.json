@@ -1,0 +1,12 @@
+{
+  "name": "stormforge-executor",
+  "version": "1.0.0",
+  "description": "StormForge remote tool executor — runs offensive security tools and reports back to C2.",
+  "type": "module",
+  "main": "executor.mjs",
+  "scripts": {
+    "start": "node executor.mjs",
+    "check-tools": "node check-tools.mjs"
+  },
+  "dependencies": {}
+}

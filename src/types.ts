@@ -117,6 +117,52 @@ export interface ScanReport {
   summary: Record<Severity, number>;
 }
 
+// ─── TASK QUEUE: C2 ↔ Executor Communication ────────────────────────────────
+
+export type ToolName =
+  | 'nmap'
+  | 'nuclei'
+  | 'httpx'
+  | 'subfinder'
+  | 'katana'
+  | 'ffuf'
+  | 'sqlmap'
+  | 'gobuster';
+
+export type TaskStatus = 'pending' | 'running' | 'done' | 'error' | 'timeout';
+
+/** A tool execution task dispatched by the C2 to a remote executor. */
+export interface ToolTask {
+  id: string;
+  /** Which scan spawned this task. */
+  scanId: string;
+  tool: ToolName;
+  /** Target host/URL — MUST be in-scope (validated before queuing). */
+  target: string;
+  /** Tool-specific arguments (e.g. ports, wordlist path, flags). */
+  args: Record<string, string>;
+  /** Scope context so the executor can double-check. */
+  scope: Scope;
+  status: TaskStatus;
+  /** Max seconds the executor should allow before killing the process. */
+  timeoutSec: number;
+  createdAt: string;
+  /** Populated by executor on completion. */
+  result?: ToolTaskResult;
+}
+
+export interface ToolTaskResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  /** Parsed findings extracted from tool output. */
+  findings: Finding[];
+  durationMs: number;
+  completedAt: string;
+}
+
+// ─── Environment bindings ────────────────────────────────────────────────────
+
 export interface Env {
   SCAN_ORCHESTRATOR: DurableObjectNamespace;
   STORMFORGE_KV: KVNamespace;
@@ -126,4 +172,6 @@ export interface Env {
   LLM_PLANNER_ENDPOINT: string;
   LLM_PLANNER_MODEL: string;
   LLM_PLANNER_API_KEY?: string;
+  /** Shared secret between C2 and executor for auth. */
+  EXECUTOR_SECRET?: string;
 }

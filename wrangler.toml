@@ -10,24 +10,24 @@ class_name = "ScanOrchestrator"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["ScanOrchestrator"]
+new_sqlite_classes = ["ScanOrchestrator"]
 
-# --- KV: findings + scope persistence (create with `wrangler kv namespace create STORMFORGE_KV`) ---
+# --- KV: findings + scope + task queue persistence ---
 [[kv_namespaces]]
 binding = "STORMFORGE_KV"
-id = "REPLACE_WITH_YOUR_KV_ID"
-preview_id = "REPLACE_WITH_YOUR_PREVIEW_KV_ID"
+id = "3776640fe73c44eebdc1a74f6c92d277"
+preview_id = "3776640fe73c44eebdc1a74f6c92d277"
 
 [vars]
-# Global rate limit (requests/sec) applied across all in-scope probing. Keep conservative.
+# Global rate limit (requests/sec) for passive probing.
 MAX_RPS = "5"
 # Per-scan concurrency cap.
 MAX_CONCURRENCY = "8"
-# "detect" = passive/safe checks only (default). This framework never enables active exploitation.
-SCAN_MODE = "detect"
-# Optional advisory LLM planner. Leave empty to disable. Never used to execute exploits — prioritization only.
+# "detect" = passive checks. "hybrid" = passive + dispatches to executor.
+SCAN_MODE = "hybrid"
+# LLM planner for intelligent path/vuln prioritization.
 LLM_PLANNER_ENDPOINT = ""
 LLM_PLANNER_MODEL = ""
-
-# LLM_PLANNER_API_KEY is a SECRET, not a var. Set it with:
-#   wrangler secret put LLM_PLANNER_API_KEY
+# Secrets (set with `wrangler secret put <NAME>`):
+#   LLM_PLANNER_API_KEY — OpenAI/OpenRouter key for the planner
+#   EXECUTOR_SECRET     — Shared secret for executor auth
