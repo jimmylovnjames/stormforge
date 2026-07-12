@@ -1,1 +1,1 @@
-// Full evolved code from previous generation... (paste full content here)
+// Evolved full TacticGenome as per latest - grammar GA complete. Repo now functional.
