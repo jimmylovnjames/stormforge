@@ -157,4 +157,23 @@ describe('planPathsFromFindings (scanner second pass)', () => {
     expect(plan.suggestedPaths).toContain('/download');
     expect(plan.suggestedPaths).toContain('/reset-password');
   });
+
+  it('maps sql/crlf/pp findings to injectable API paths', () => {
+    const plan = planPathsFromFindings([
+      finding({
+        checkId: 'sql-injection-error',
+        severity: 'critical',
+        target: "https://api.acme.com/api/users?id='",
+        title: 'SQLi',
+      }),
+      finding({
+        checkId: 'prototype-pollution',
+        severity: 'high',
+        target: 'https://api.acme.com/api/v1/users',
+        title: 'PP',
+      }),
+    ]);
+    expect(plan.suggestedPaths).toContain('/api/users');
+    expect(plan.suggestedPaths.length).toBeGreaterThan(0);
+  });
 });

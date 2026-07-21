@@ -124,6 +124,21 @@ function impactStatement(f: Finding): string {
   if (f.cwe === 'CWE-644') {
     return 'Host header injection and cache poisoning can hijack password-reset links, poison CDN caches, and route victims to attacker infrastructure.';
   }
+  if (f.cwe === 'CWE-89') {
+    return 'SQL injection can disclose or modify database contents, bypass authentication, and in severe cases lead to remote code execution via database features.';
+  }
+  if (f.cwe === 'CWE-113') {
+    return 'CRLF / HTTP response splitting enables session fixation, cache poisoning, and cross-site scripting via attacker-controlled response headers.';
+  }
+  if (f.cwe === 'CWE-1321') {
+    return 'Prototype pollution can escalate into authentication bypass, remote code execution, or denial of service through polluted object gadgets.';
+  }
+  if (f.cwe === 'CWE-915') {
+    return 'Mass assignment lets attackers set privileged model fields (roles, flags) and escalate access without a direct authorization flaw.';
+  }
+  if (f.cwe === 'CWE-200') {
+    return 'Public object-store listings expose file keys and often leak backups, credentials, source archives, and personal data at scale.';
+  }
 
   switch (f.severity) {
     case 'critical':

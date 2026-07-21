@@ -17,6 +17,10 @@ import { ssrfRedirectCheck } from './checks/ssrf-redirect.js';
 import { commandInjectionCheck } from './checks/command-injection.js';
 import { pathTraversalCheck } from './checks/path-traversal.js';
 import { hostHeaderCheck } from './checks/host-header.js';
+import { sqlInjectionCheck } from './checks/sql-injection.js';
+import { crlfInjectionCheck } from './checks/crlf-injection.js';
+import { prototypePollutionCheck } from './checks/prototype-pollution.js';
+import { cloudBucketCheck } from './checks/cloud-bucket.js';
 import { secretsExposureCheck } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -36,6 +40,10 @@ const REGISTRY: Check[] = [
   commandInjectionCheck,
   pathTraversalCheck,
   hostHeaderCheck,
+  sqlInjectionCheck,
+  crlfInjectionCheck,
+  prototypePollutionCheck,
+  cloudBucketCheck,
 ];
 
 export function registerCheck(check: Check): void {

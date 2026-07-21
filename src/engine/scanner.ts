@@ -37,6 +37,26 @@ import {
   buildHostHeaderVariants,
   shouldProbeHostHeader,
 } from '../recon/host-header-probes.js';
+import {
+  SQL_PATHS,
+  buildSqlInjectionProbeUrls,
+  shouldProbeSqlInjection,
+} from '../recon/sql-probes.js';
+import {
+  CRLF_PATHS,
+  buildCrlfProbeUrls,
+  shouldProbeCrlf,
+} from '../recon/crlf-probes.js';
+import {
+  PP_PATHS,
+  buildPrototypePollutionUrls,
+  shouldProbePrototypePollution,
+} from '../recon/pp-probes.js';
+import {
+  BUCKET_APP_PATHS,
+  buildBucketProbeUrls,
+  shouldProbeBucket,
+} from '../recon/bucket-probes.js';
 import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
@@ -210,7 +230,72 @@ export async function runScan(
     });
   }
 
-  // 10. Run detection checks over all probes.
+  // 10. SQL injection error canaries.
+  const sqlUrls = collectSqlInjectionFollowUps(probes);
+  const { allowed: allowedSql } = partitionByScope(sqlUrls, req.scope);
+  const freshSql = allowedSql.filter((u) => !probes.some((p) => p.url === u));
+  if (freshSql.length) {
+    await mapWithConcurrency(freshSql, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'text/html, application/json;q=0.9, */*;q=0.8' },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'sql-injection-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 11. CRLF / response-splitting canaries.
+  const crlfUrls = collectCrlfFollowUps(probes);
+  const { allowed: allowedCrlf } = partitionByScope(crlfUrls, req.scope);
+  const freshCrlf = allowedCrlf.filter((u) => !probes.some((p) => p.url === u));
+  if (freshCrlf.length) {
+    await mapWithConcurrency(freshCrlf, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: { origin: PROBE_ORIGIN, accept: '*/*' },
+        redirect: false,
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'crlf-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 12. Prototype pollution / mass-assignment canaries.
+  const ppUrls = collectPrototypePollutionFollowUps(probes);
+  const { allowed: allowedPp } = partitionByScope(ppUrls, req.scope);
+  const freshPp = allowedPp.filter((u) => !probes.some((p) => p.url === u));
+  if (freshPp.length) {
+    await mapWithConcurrency(freshPp, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'application/json, text/html;q=0.8, */*;q=0.5' },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'prototype-pollution-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 13. Cloud bucket / object-store listing probes.
+  const bucketUrls = collectBucketFollowUps(probes);
+  const { allowed: allowedBucket } = partitionByScope(bucketUrls, req.scope);
+  const freshBucket = allowedBucket.filter((u) => !probes.some((p) => p.url === u));
+  if (freshBucket.length) {
+    await mapWithConcurrency(freshBucket, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'application/xml, application/json, */*' },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'bucket-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 14. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
     for (const f of runChecks(probe, { scope: req.scope, siblings: probes })) {
@@ -218,7 +303,7 @@ export async function runScan(
     }
   }
 
-  // 11. Autonomy second pass: findings → more paths → probe → re-check.
+  // 15. Autonomy second pass: findings → more paths → probe → re-check.
   let findings = [...dedup.values()];
   const fromFindings = planPathsFromFindings(findings);
   if (fromFindings.suggestedPaths.length) {
@@ -249,7 +334,7 @@ export async function runScan(
 
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 12. Assemble report.
+  // 16. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -447,6 +532,90 @@ export function collectHostHeaderFollowUps(
   return out;
 }
 
+export function collectSqlInjectionFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  let budget = 20;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeSqlInjection(p)) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    for (const url of buildSqlInjectionProbeUrls(cleanBase, 2)) {
+      if (budget <= 0) break;
+      out.add(url);
+      budget--;
+    }
+  }
+  return [...out];
+}
+
+export function collectCrlfFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  let budget = 14;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeCrlf(p)) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    for (const url of buildCrlfProbeUrls(cleanBase, 2)) {
+      if (budget <= 0) break;
+      out.add(url);
+      budget--;
+    }
+  }
+  return [...out];
+}
+
+export function collectPrototypePollutionFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  let budget = 16;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbePrototypePollution(p)) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    for (const url of buildPrototypePollutionUrls(cleanBase)) {
+      if (budget <= 0) break;
+      out.add(url);
+      budget--;
+    }
+  }
+  return [...out];
+}
+
+export function collectBucketFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  let budget = 12;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeBucket(p)) continue;
+    for (const url of buildBucketProbeUrls(p.finalUrl ?? p.url)) {
+      if (budget <= 0) break;
+      out.add(url);
+      budget--;
+    }
+  }
+  return [...out];
+}
+
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */
 function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
   const urls = new Set<string>();
@@ -458,6 +627,10 @@ function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
     ...REDIRECT_SSRF_PATHS,
     ...CMD_EXEC_PATHS,
     ...LFI_PATHS,
+    ...SQL_PATHS,
+    ...CRLF_PATHS,
+    ...PP_PATHS,
+    ...BUCKET_APP_PATHS,
     ...SECRET_LEAK_PATHS,
     ...SENSITIVE_PATHS,
     ...extraPaths,

@@ -294,8 +294,8 @@ export function planFollowUpTasks(
       });
     }
 
-    // Secrets / exposed files → gobuster nearby
-    if (/secret|exposed-files|git|env/i.test(f.checkId + f.title)) {
+    // Secrets / exposed files / buckets → gobuster nearby
+    if (/secret|exposed-files|git|env|cloud-bucket/i.test(f.checkId + f.title)) {
       const base = originOf(target);
       if (base) {
         push({
@@ -308,6 +308,19 @@ export function planFollowUpTasks(
           },
           timeoutSec: 240,
           rationale: `Dirbust after secret/exposure finding on ${base}`,
+        });
+      }
+    }
+
+    // SQLi / CRLF / PP → prefer sqlmap + nuclei
+    if (/sql-injection|crlf-header|prototype-pollution/i.test(f.checkId)) {
+      if (/[?&]\w+=/.test(target)) {
+        push({
+          tool: 'sqlmap',
+          target,
+          args: { flags: '--batch --level=3 --risk=1 --random-agent' },
+          timeoutSec: 420,
+          rationale: `Deepen injection finding ${f.checkId} with sqlmap`,
         });
       }
     }

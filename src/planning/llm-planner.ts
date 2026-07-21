@@ -200,19 +200,25 @@ export function planPathsFromFindings(findings: Finding[]): PlannerSuggestion {
       case 'xss-injection':
       case 'command-injection':
       case 'ssrf-open-redirect':
+      case 'sql-injection-error':
+      case 'crlf-header-injection':
+      case 'prototype-pollution':
         try {
           const u = new URL(f.target);
           if (u.pathname && u.pathname !== '/') paths.push(u.pathname);
         } catch {
           /* ignore */
         }
-        paths.push('/search', '/redirect', '/proxy', '/ping', '/exec');
+        paths.push('/search', '/redirect', '/proxy', '/ping', '/exec', '/api/users', '/api/v1/users');
         break;
       case 'path-traversal':
         paths.push('/download', '/file', '/static', '/api/file', '/view', '/include', '/page');
         break;
       case 'host-header-injection':
         paths.push('/', '/login', '/reset-password', '/account', '/forgot-password');
+        break;
+      case 'cloud-bucket-exposure':
+        paths.push('/assets/', '/static/', '/uploads/', '/media/', '/files/', '/backup/', '/data/');
         break;
       case 'rate-limit-missing':
         paths.push('/login', '/api/v1/login', '/oauth/token', '/otp');
