@@ -7,6 +7,10 @@ import { exposedFilesCheck } from './checks/exposed-files.js';
 import { corsCheck } from './checks/cors.js';
 import { cookiesCheck } from './checks/cookies.js';
 import { versionCveCheck } from './checks/version-cve.js';
+import { apiSchemaExposureCheck } from './checks/api-schema-exposure.js';
+import { graphqlIntrospectionCheck } from './checks/graphql-introspection.js';
+import { weakCspCheck } from './checks/weak-csp.js';
+import { sourcemapCheck } from './checks/sourcemap.js';
 import { scanSecrets } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -15,6 +19,10 @@ const REGISTRY: Check[] = [
   corsCheck,
   cookiesCheck,
   versionCveCheck,
+  apiSchemaExposureCheck,
+  graphqlIntrospectionCheck,
+  weakCspCheck,
+  sourcemapCheck,
 ];
 
 export function registerCheck(check: Check): void {

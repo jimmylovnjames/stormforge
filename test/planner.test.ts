@@ -76,6 +76,49 @@ describe('vuln-planner', () => {
     expect(plan.tasks.some((t) => t.tool === 'nuclei' && /wordpress/i.test(t.args.templates || ''))).toBe(true);
   });
 
+  it('planFromFindings fans out subfinder hosts to httpx + takeovers', () => {
+    const findings: Finding[] = [
+      {
+        id: '1',
+        checkId: 'subfinder-enumeration',
+        title: '3 subdomains discovered for acme.com',
+        severity: 'info',
+        target: 'acme.com',
+        description: 'api.acme.com\napp.acme.com\ncdn.acme.com',
+        evidence: 'api.acme.com, app.acme.com, cdn.acme.com',
+        reproduction: [],
+        remediation: '',
+        references: [],
+        needsManualReview: true,
+        discoveredAt: new Date().toISOString(),
+      },
+    ];
+    const plan = planFromFindings(findings, scope);
+    expect(plan.tasks.some((t) => t.tool === 'httpx')).toBe(true);
+    expect(plan.tasks.some((t) => t.tool === 'nuclei' && /takeovers/i.test(t.args.templates || ''))).toBe(true);
+  });
+
+  it('planFromFindings sends sqlmap for katana param URLs', () => {
+    const findings: Finding[] = [
+      {
+        id: '2',
+        checkId: 'katana-endpoint-discovery',
+        title: 'interesting endpoints',
+        severity: 'low',
+        target: 'https://app.acme.com',
+        description: '',
+        evidence: 'https://app.acme.com/search?q=1\nhttps://app.acme.com/api/v1/items?id=2',
+        reproduction: [],
+        remediation: '',
+        references: [],
+        needsManualReview: true,
+        discoveredAt: new Date().toISOString(),
+      },
+    ];
+    const plan = planFromFindings(findings, scope);
+    expect(plan.tasks.some((t) => t.tool === 'sqlmap' && /[?&]\w+=/.test(t.target))).toBe(true);
+  });
+
   it('nucleiTemplatesFromText maps products', () => {
     expect(nucleiTemplatesFromText('GraphQL Yoga on nginx')).toMatch(/graphql/);
   });

@@ -68,7 +68,7 @@ export default {
 
       const reportMatch = pathname.match(/^\/api\/report\/([^/]+)$/);
       if (request.method === 'GET' && reportMatch) {
-        return await handleReport(decodeURIComponent(reportMatch[1]), env);
+        return await handleReport(decodeURIComponent(reportMatch[1]), env, request);
       }
 
       if (request.method === 'GET' && pathname === '/api/checks') {
@@ -433,10 +433,14 @@ async function handleStatus(scanId: string, env: Env): Promise<Response> {
   });
 }
 
-async function handleReport(program: string, env: Env): Promise<Response> {
+async function handleReport(program: string, env: Env, request: Request): Promise<Response> {
   const store = new FindingsStore(env.STORMFORGE_KV);
   const findings = await store.getAll(program);
   if (findings.length === 0) return json({ error: 'No findings for program' }, 404);
+
+  const url = new URL(request.url);
+  const submitReadyOnly = url.searchParams.get('submitReady') === '1' || url.searchParams.get('ready') === '1';
+  const minSeverity = (url.searchParams.get('minSeverity') as Finding['severity'] | null) || undefined;
 
   const scope: Scope = {
     program,
@@ -445,7 +449,7 @@ async function handleReport(program: string, env: Env): Promise<Response> {
     outOfScope: [],
     authorized: true,
   };
-  const markdown = draftDisclosure(findings, scope);
+  const markdown = draftDisclosure(findings, scope, { submitReadyOnly, minSeverity });
   return new Response(markdown, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
 }
 

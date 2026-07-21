@@ -1,6 +1,7 @@
 // The scan engine: turns a ScanRequest into a ScanReport.
 //
 // Flow: expand targets -> scope-filter -> bounded-concurrency probe ->
+// GraphQL introspection follow-ups -> CORS bypass probes ->
 // run checks -> collect + dedupe findings. Entirely non-destructive.
 
 import type { Env, Finding, ProbeResult, ScanReport, ScanRequest } from '../types.js';
@@ -8,9 +9,14 @@ import { HttpClient, RateLimiter } from '../recon/http-client.js';
 import { partitionByScope, hostOf } from '../scope/scope-guard.js';
 import { SENSITIVE_PATHS, API_PROBE_PATHS } from '../recon/wordlists.js';
 import { runChecks } from '../detect/registry.js';
-import { PROBE_ORIGIN } from '../detect/checks/cors.js';
+import { PROBE_ORIGIN, corsBypassOriginFor } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
 import { planNextPaths } from '../planning/llm-planner.js';
+import {
+  parseBodySignals,
+  buildGraphqlIntrospectionUrl,
+  shouldFollowUpGraphqlIntrospection,
+} from '../recon/body-parse.js';
 
 export interface ScanProgress {
   (event: { phase: string; probed: number; total: number; findings: number }): void;
@@ -34,11 +40,12 @@ export async function runScan(
   const urls = buildProbeUrls(allowed, req.extraPaths ?? []);
   const { allowed: allowedUrls } = partitionByScope(urls, req.scope);
 
-  // 2. Probe with bounded concurrency.
+  // 2. Probe with bounded concurrency; attach body signals on 2xx.
   const probes: ProbeResult[] = [];
   let probed = 0;
   await mapWithConcurrency(allowedUrls, concurrency, async (url) => {
     const p = await client.probe(url, { headers: { origin: PROBE_ORIGIN } });
+    attachSignals(p);
     probes.push(p);
     probed++;
     onProgress?.({ phase: 'probe', probed, total: allowedUrls.length, findings: 0 });
@@ -52,22 +59,57 @@ export async function runScan(
     const fresh = allowedExtra.filter((u) => !probes.some((p) => p.url === u));
     await mapWithConcurrency(fresh, concurrency, async (url) => {
       const p = await client.probe(url, { headers: { origin: PROBE_ORIGIN } });
+      attachSignals(p);
       probes.push(p);
       probed++;
-      onProgress?.({ phase: 'plan-probe', probed, total: allowedUrls.length + fresh.length, findings: 0 });
+      onProgress?.({
+        phase: 'plan-probe',
+        probed,
+        total: allowedUrls.length + fresh.length,
+        findings: 0,
+      });
     });
   }
 
-  // 4. Run detection checks over all probes.
+  // 4. Safe GraphQL GET introspection follow-ups (cap).
+  const gqlFollowUps = buildGraphqlFollowUps(probes).slice(0, 8);
+  if (gqlFollowUps.length) {
+    onProgress?.({ phase: 'graphql-introspect', probed, total: probed + gqlFollowUps.length, findings: 0 });
+    await mapWithConcurrency(gqlFollowUps, Math.min(4, concurrency), async (url) => {
+      const p = await client.probe(url, {
+        headers: {
+          origin: PROBE_ORIGIN,
+          accept: 'application/json, application/graphql-response+json, text/html',
+        },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+    });
+  }
+
+  // 5. CORS subdomain-trust bypass Origins (ends-with registrable domain).
+  const corsTargets = pickCorsBypassTargets(probes).slice(0, 6);
+  if (corsTargets.length) {
+    onProgress?.({ phase: 'cors-bypass-probe', probed, total: probed + corsTargets.length, findings: 0 });
+    await mapWithConcurrency(corsTargets, Math.min(4, concurrency), async ({ url, origin }) => {
+      const p = await client.probe(url, { headers: { origin } });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+    });
+  }
+
+  // 6. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
     const findings = runChecks(probe, { scope: req.scope, siblings: probes });
     for (const f of findings) dedup.set(f.id, f);
   }
   const findings = [...dedup.values()];
-  onProgress?.({ phase: 'analyze', probed, total: allowedUrls.length, findings: findings.length });
+  onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 5. Assemble report.
+  // 7. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -82,12 +124,67 @@ export async function runScan(
   };
 }
 
+function attachSignals(probe: ProbeResult): void {
+  if (probe.error || !probe.body) return;
+  if (probe.status < 200 || probe.status >= 500) return;
+  probe.signals = parseBodySignals(probe.body, probe.headers, probe.status);
+}
+
+function buildGraphqlFollowUps(probes: ProbeResult[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const p of probes) {
+    const signals = p.signals ?? parseBodySignals(p.body, p.headers, p.status);
+    if (!shouldFollowUpGraphqlIntrospection(p.url, p.status, signals)) continue;
+    try {
+      const next = buildGraphqlIntrospectionUrl(p.finalUrl ?? p.url);
+      if (seen.has(next) || probes.some((x) => x.url === next)) continue;
+      seen.add(next);
+      out.push(next);
+    } catch {
+      /* skip bad URL */
+    }
+  }
+  return out;
+}
+
+function pickCorsBypassTargets(probes: ProbeResult[]): Array<{ url: string; origin: string }> {
+  const out: Array<{ url: string; origin: string }> = [];
+  const seenHost = new Set<string>();
+  for (const p of probes) {
+    if (p.error || p.status === 0) continue;
+    if (p.status < 200 || p.status >= 500) continue;
+    let host: string;
+    try {
+      host = hostOf(p.url);
+    } catch {
+      continue;
+    }
+    if (seenHost.has(host)) continue;
+    const origin = corsBypassOriginFor(p.url);
+    if (!origin) continue;
+    // Prefer API-ish / HTML roots.
+    const path = (() => {
+      try {
+        return new URL(p.url).pathname;
+      } catch {
+        return '/';
+      }
+    })();
+    if (!(path === '/' || path.startsWith('/api') || path.includes('login') || path.includes('graphql'))) {
+      continue;
+    }
+    seenHost.add(host);
+    out.push({ url: p.url, origin });
+  }
+  return out;
+}
+
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */
 function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
   const urls = new Set<string>();
   const paths = [...API_PROBE_PATHS, ...SENSITIVE_PATHS, ...extraPaths];
   for (const t of targets) {
-    // If the seed already has a path, probe it directly too.
     if (/^https?:\/\/.+\/.+/.test(t)) urls.add(t);
     let host: string;
     try {
@@ -107,10 +204,10 @@ async function mapWithConcurrency<T>(
   worker: (item: T) => Promise<void>,
 ): Promise<void> {
   let index = 0;
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+  const runners = Array.from({ length: Math.min(limit, items.length || 1) }, async () => {
     while (index < items.length) {
       const current = index++;
-      await worker(items[current]);
+      await worker(items[current]!);
     }
   });
   await Promise.all(runners);

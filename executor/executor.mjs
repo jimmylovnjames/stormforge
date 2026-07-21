@@ -386,24 +386,38 @@ function parseNucleiOutput(stdout, task) {
       const item = JSON.parse(line);
       const severity = (item.info?.severity || 'info').toLowerCase();
       const sev = ['info', 'low', 'medium', 'high', 'critical'].includes(severity) ? severity : 'info';
-      // Drop pure info nuclei noise by default
       if (sev === 'info') continue;
+      const matchedAt = item['matched-at'] || item.matched || item.host || task.target;
+      const matcher = item['matcher-name'] || item['matcher_name'] || '';
+      const extracted = Array.isArray(item['extracted-results'])
+        ? item['extracted-results'].slice(0, 5).join(', ')
+        : '';
+      const evidenceParts = [
+        matchedAt && `matched-at: ${matchedAt}`,
+        matcher && `matcher: ${matcher}`,
+        extracted && `extracted: ${extracted}`,
+        item['curl-command'] && `curl: ${item['curl-command']}`,
+        item['template-id'] && `template: ${item['template-id']}`,
+      ].filter(Boolean);
       findings.push({
-        id: makeFindingId('nuclei', item.host || task.target, item['template-id'] || ''),
+        id: makeFindingId('nuclei', matchedAt, item['template-id'] || matcher || ''),
         checkId: `nuclei-${item['template-id'] || 'unknown'}`,
         title: item.info?.name || item['template-id'] || 'Nuclei finding',
         severity: sev,
-        target: item.host || item['matched-at'] || item.matched || task.target,
+        target: matchedAt,
         description: item.info?.description || `Nuclei template ${item['template-id']} matched`,
-        evidence: item['matched-at'] || item.matched || item['curl-command'] || line.slice(0, 500),
+        evidence: evidenceParts.join('\n') || line.slice(0, 500),
         reproduction: item['curl-command']
           ? [item['curl-command']]
-          : [`nuclei -u ${task.target} -tags ${item['template-id']}`],
+          : [`nuclei -u ${task.target} -t ${item['template-id'] || ''}`],
         remediation: item.info?.remediation || 'See references for remediation guidance.',
         cwe: item.info?.classification?.['cwe-id']?.[0] || undefined,
         references: item.info?.reference || [],
         needsManualReview: sev === 'low' || sev === 'medium',
         evidenceGrade: 'tool-confirmed',
+        confidence: sev === 'critical' || sev === 'high' ? 0.9 : 0.75,
+        submitReady: sev === 'critical' || sev === 'high',
+        source: 'executor',
         discoveredAt: new Date().toISOString(),
       });
     } catch {
@@ -486,28 +500,50 @@ function parseKatanaOutput(stdout, task) {
       u.includes('/admin') ||
       u.includes('/graphql') ||
       u.includes('.json') ||
-      u.includes('/debug'),
+      u.includes('/debug') ||
+      u.includes('/swagger') ||
+      u.includes('/openapi'),
   );
   if (!interesting.length) return [];
 
+  const findings = [];
   const key = hashTokenList(interesting);
-  return [
-    {
-      id: makeFindingId('katana-endpoint-discovery', task.target, key),
-      checkId: 'katana-endpoint-discovery',
-      title: `${interesting.length} interesting endpoints on ${task.target}`,
-      severity: 'low',
-      target: task.target,
-      description: `Crawling found ${urls.length} URLs, ${interesting.length} interesting:\n${interesting.slice(0, 30).join('\n')}`,
-      evidence: interesting.slice(0, 15).join('\n'),
-      reproduction: [`katana -u ${task.target} -d 2 -jc`],
-      remediation: 'Review endpoints for authz issues and injection surfaces.',
+  findings.push({
+    id: makeFindingId('katana-endpoint-discovery', task.target, key),
+    checkId: 'katana-endpoint-discovery',
+    title: `${interesting.length} interesting endpoints on ${task.target}`,
+    severity: 'low',
+    target: task.target,
+    description: `Crawling found ${urls.length} URLs, ${interesting.length} interesting:\n${interesting.slice(0, 30).join('\n')}`,
+    evidence: interesting.slice(0, 40).join('\n'),
+    reproduction: [`katana -u ${task.target} -d 2 -jc`],
+    remediation: 'Review endpoints for authz issues and injection surfaces.',
+    references: [],
+    needsManualReview: true,
+    evidenceGrade: 'heuristic',
+    discoveredAt: new Date().toISOString(),
+  });
+
+  // Per-URL findings for param endpoints (planner fan-out); hard cap.
+  for (const u of interesting.filter((x) => /[?&]\w+=/.test(x)).slice(0, 12)) {
+    findings.push({
+      id: makeFindingId('katana-param-url', u, 'param'),
+      checkId: 'katana-param-url',
+      title: `Parameterized URL discovered: ${u.slice(0, 120)}`,
+      severity: 'info',
+      target: u,
+      description: 'Katana discovered a URL with query parameters — candidate for sqlmap/XSS testing.',
+      evidence: u,
+      reproduction: [`curl -sI '${u}'`],
+      remediation: 'Validate all user-controlled parameters server-side.',
       references: [],
       needsManualReview: true,
       evidenceGrade: 'heuristic',
       discoveredAt: new Date().toISOString(),
-    },
-  ];
+    });
+  }
+
+  return findings;
 }
 
 function parseFfufOutput(stdout, task) {
@@ -561,24 +597,47 @@ function parseFfufOutput(stdout, task) {
 
 function parseSqlmapOutput(stdout, task) {
   const findings = [];
-  if (/is vulnerable|injectable/i.test(stdout)) {
-    findings.push({
-      id: makeFindingId('sqlmap-injection', task.target, 'confirmed'),
-      checkId: 'sqlmap-injection',
-      title: `SQL Injection confirmed on ${task.target}`,
-      severity: 'critical',
-      target: task.target,
-      description: 'sqlmap confirmed SQL injection (detection mode).',
-      evidence: stdout.slice(Math.max(0, stdout.search(/vulnerable|injectable/i)), stdout.search(/vulnerable|injectable/i) + 400),
-      reproduction: [`sqlmap -u "${task.target}" --batch --level=1 --risk=1`],
-      remediation: 'Use parameterized queries / prepared statements.',
-      cwe: 'CWE-89',
-      references: ['https://owasp.org/www-community/attacks/SQL_Injection'],
-      needsManualReview: true,
-      evidenceGrade: 'tool-confirmed',
-      discoveredAt: new Date().toISOString(),
-    });
-  }
+  if (!/is vulnerable|injectable/i.test(stdout)) return findings;
+
+  const paramMatch = stdout.match(/Parameter:\s*([^\s(]+)\s*\(([^)]+)\)\s*is\s+vulnerable/i);
+  const dbmsMatch = stdout.match(/back-end DBMS:\s*([^\n]+)/i);
+  const techniqueMatch = stdout.match(/Type:\s*([^\n]+)/i);
+  const param = paramMatch?.[1] || 'unknown';
+  const place = paramMatch?.[2] || '';
+  const dbms = dbmsMatch?.[1]?.trim() || '';
+  const technique = techniqueMatch?.[1]?.trim() || '';
+
+  const evidenceStart = Math.max(0, stdout.search(/vulnerable|injectable/i));
+  findings.push({
+    id: makeFindingId('sqlmap-injection', task.target, param),
+    checkId: 'sqlmap-injection',
+    title: paramMatch
+      ? `SQL Injection in ${param}${place ? ` (${place})` : ''} on ${task.target}`
+      : `SQL Injection confirmed on ${task.target}`,
+    severity: 'critical',
+    target: task.target,
+    description: [
+      'sqlmap confirmed SQL injection (detection mode).',
+      dbms ? `DBMS: ${dbms}.` : '',
+      technique ? `Technique: ${technique}.` : '',
+    ]
+      .filter(Boolean)
+      .join(' '),
+    evidence: stdout.slice(evidenceStart, evidenceStart + 600),
+    reproduction: [
+      `sqlmap -u "${task.target}" --batch --level=1 --risk=1`,
+      param !== 'unknown' ? `Focus parameter: ${param}` : '',
+    ].filter(Boolean),
+    remediation: 'Use parameterized queries / prepared statements; never concatenate user input into SQL.',
+    cwe: 'CWE-89',
+    references: ['https://owasp.org/www-community/attacks/SQL_Injection'],
+    needsManualReview: true,
+    evidenceGrade: 'tool-confirmed',
+    confidence: 0.92,
+    submitReady: false,
+    source: 'executor',
+    discoveredAt: new Date().toISOString(),
+  });
   return findings;
 }
 
@@ -744,6 +803,8 @@ export {
   parseHttpxOutput,
   parseSubfinderOutput,
   parseNucleiOutput,
+  parseKatanaOutput,
+  parseSqlmapOutput,
 };
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {

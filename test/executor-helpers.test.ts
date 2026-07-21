@@ -8,6 +8,8 @@ import {
   parseHttpxOutput,
   parseSubfinderOutput,
   parseNucleiOutput,
+  parseKatanaOutput,
+  parseSqlmapOutput,
 } from '../executor/executor.mjs';
 
 describe('executor helpers', () => {
@@ -63,10 +65,40 @@ describe('executor helpers', () => {
     });
     const high = JSON.stringify({
       host: 'https://httpbin.org',
+      'matched-at': 'https://httpbin.org/admin',
       'template-id': 'cve-2020-1',
+      'matcher-name': 'status',
+      'extracted-results': ['admin'],
+      'curl-command': 'curl https://httpbin.org/admin',
       info: { name: 'cve', severity: 'high', description: 'x' },
     });
     expect(parseNucleiOutput(info, task)).toHaveLength(0);
-    expect(parseNucleiOutput(high, task)).toHaveLength(1);
+    const hits = parseNucleiOutput(high, task);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].evidence).toMatch(/matcher/);
+    expect(hits[0].target).toContain('/admin');
+  });
+
+  it('katana emits per-param URL findings', () => {
+    const task = { target: 'https://app.acme.com' };
+    const out = parseKatanaOutput(
+      'https://app.acme.com/\nhttps://app.acme.com/search?q=1\nhttps://app.acme.com/api/v1\n',
+      task,
+    );
+    expect(out.some((f) => f.checkId === 'katana-endpoint-discovery')).toBe(true);
+    expect(out.some((f) => f.checkId === 'katana-param-url' && f.target.includes('q=1'))).toBe(true);
+  });
+
+  it('sqlmap extracts parameter and DBMS', () => {
+    const task = { target: 'https://app.acme.com/?id=1' };
+    const stdout = `
+Parameter: id (GET) is vulnerable. Do you want to keep testing others? [y/N]
+Type: boolean-based blind
+back-end DBMS: MySQL >= 5.0
+`;
+    const f = parseSqlmapOutput(stdout, task);
+    expect(f).toHaveLength(1);
+    expect(f[0].title).toMatch(/id/);
+    expect(f[0].description).toMatch(/MySQL/);
   });
 });

@@ -1,10 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { securityHeadersCheck } from '../src/detect/checks/security-headers.js';
-import { corsCheck, PROBE_ORIGIN } from '../src/detect/checks/cors.js';
+import { corsCheck, PROBE_ORIGIN, corsBypassOriginFor } from '../src/detect/checks/cors.js';
 import { exposedFilesCheck } from '../src/detect/checks/exposed-files.js';
 import { cookiesCheck, splitSetCookie } from '../src/detect/checks/cookies.js';
 import { versionCveCheck } from '../src/detect/checks/version-cve.js';
+import { apiSchemaExposureCheck } from '../src/detect/checks/api-schema-exposure.js';
+import { graphqlIntrospectionCheck } from '../src/detect/checks/graphql-introspection.js';
+import { weakCspCheck } from '../src/detect/checks/weak-csp.js';
+import { sourcemapCheck } from '../src/detect/checks/sourcemap.js';
 import { scanSecrets } from '../src/recon/secrets.js';
+import { listChecks } from '../src/detect/registry.js';
 import type { ProbeResult, Scope, CheckContext } from '../src/types.js';
 
 const scope: Scope = { program: 'p', platform: 'generic', inScope: ['*.x.com'], outOfScope: [], authorized: true };
@@ -51,8 +56,93 @@ describe('corsCheck', () => {
     expect(f).toHaveLength(1);
     expect(f[0].severity).toBe('high');
   });
+  it('flags subdomain-trust bypass origin', () => {
+    const bypass = corsBypassOriginFor('https://a.x.com/api');
+    expect(bypass).toBeTruthy();
+    const f = corsCheck.run(
+      probe({
+        url: 'https://a.x.com/api',
+        headers: { 'access-control-allow-origin': bypass!, 'access-control-allow-credentials': 'true' },
+      }),
+      ctx,
+    );
+    expect(f).toHaveLength(1);
+    expect(f[0].title.toLowerCase()).toMatch(/subdomain|ends-with|bypass/);
+  });
   it('ignores same-origin / no ACAO', () => {
     expect(corsCheck.run(probe({}), ctx)).toHaveLength(0);
+  });
+});
+
+describe('apiSchemaExposureCheck', () => {
+  it('flags OpenAPI with paths as high', () => {
+    const body = JSON.stringify({
+      openapi: '3.0.1',
+      info: { title: 'API', version: '1' },
+      paths: { '/users': { get: {} }, '/orders': { post: {} } },
+    });
+    const f = apiSchemaExposureCheck.run(
+      probe({ url: 'https://a.x.com/openapi.json', body, headers: { 'content-type': 'application/json' } }),
+      ctx,
+    );
+    expect(f.some((x) => x.checkId === 'api-schema-exposure' && x.severity === 'high')).toBe(true);
+  });
+});
+
+describe('graphqlIntrospectionCheck', () => {
+  it('flags confirmed __schema payload', () => {
+    const body = JSON.stringify({
+      data: { __schema: { queryType: { name: 'Query' }, types: [{ name: 'User', kind: 'OBJECT' }] } },
+    });
+    const f = graphqlIntrospectionCheck.run(
+      probe({ url: 'https://a.x.com/graphql?query=x', body, headers: { 'content-type': 'application/json' } }),
+      ctx,
+    );
+    expect(f[0]?.severity).toBe('high');
+    expect(f[0]?.submitReady).toBe(true);
+  });
+});
+
+describe('weakCspCheck', () => {
+  it('flags unsafe-inline script-src', () => {
+    const f = weakCspCheck.run(
+      probe({
+        headers: {
+          'content-type': 'text/html',
+          'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'",
+        },
+      }),
+      ctx,
+    );
+    expect(f).toHaveLength(1);
+    expect(f[0].title).toMatch(/unsafe-inline/);
+  });
+});
+
+describe('sourcemapCheck', () => {
+  it('flags sourcesContent maps', () => {
+    const body = JSON.stringify({
+      version: 3,
+      sources: ['src/app.ts'],
+      mappings: 'AAAA',
+      sourcesContent: ['const secret = "x"'],
+    });
+    const f = sourcemapCheck.run(
+      probe({ url: 'https://a.x.com/app.js.map', body, headers: { 'content-type': 'application/json' } }),
+      ctx,
+    );
+    expect(f[0]?.severity).toBe('medium');
+    expect(f[0]?.submitReady).toBe(true);
+  });
+});
+
+describe('registry', () => {
+  it('registers high-signal BBP checks', () => {
+    const ids = listChecks().map((c) => c.id);
+    expect(ids).toContain('api-schema-exposure');
+    expect(ids).toContain('graphql-introspection');
+    expect(ids).toContain('weak-csp');
+    expect(ids).toContain('sourcemap-exposure');
   });
 });
 
@@ -76,6 +166,14 @@ describe('cookiesCheck', () => {
     const f = cookiesCheck.run(probe({ headers: { 'set-cookie': 'sessionid=abc; Path=/' } }), ctx);
     expect(f).toHaveLength(1);
     expect(f[0].title).toContain('Secure');
+    expect(f[0].severity).toBe('medium');
+  });
+  it('flags SameSite=None without Secure', () => {
+    const f = cookiesCheck.run(
+      probe({ headers: { 'set-cookie': 'sid=abc; Path=/; SameSite=None' } }),
+      ctx,
+    );
+    expect(f.some((x) => /SameSite=None without Secure/.test(x.title))).toBe(true);
   });
 });
 

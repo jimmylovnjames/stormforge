@@ -228,7 +228,8 @@ export function heuristicAttackPlan(targets: string[], scope: Scope): AttackPlan
 
 /**
  * Turn prior findings into the next high-leverage executor tasks
- * (tech-tagged nuclei, katana on APIs, sqlmap on params).
+ * (tech-tagged nuclei, per-host httpx from subfinder, katana URLs → sqlmap,
+ * schema/graphql packs, takeover tags).
  */
 export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan {
   const tasks: PlannedTask[] = [];
@@ -236,7 +237,7 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
 
   const push = (t: PlannedTask) => {
     if (!evaluateScope(t.target, scope).allowed) return;
-    const key = `${t.tool}|${t.target}|${t.args.templates ?? ''}`;
+    const key = `${t.tool}|${t.target}|${t.args.templates ?? ''}|${t.args.flags ?? ''}`;
     if (seen.has(key)) return;
     seen.add(key);
     tasks.push(t);
@@ -250,9 +251,10 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
     if (tasks.length >= 12) break;
     const target = f.target;
     if (!target) continue;
+    const blob = `${f.checkId}\n${f.title}\n${f.evidence}\n${f.description}`;
 
     if (/httpx-tech|version-cve|fingerprint/i.test(f.checkId)) {
-      const templates = nucleiTemplatesFromText(`${f.title}\n${f.evidence}`);
+      const templates = nucleiTemplatesFromText(blob);
       push({
         tool: 'nuclei',
         target,
@@ -263,6 +265,35 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
         timeoutSec: 420,
         rationale: `Tech-tagged nuclei after ${f.checkId}`,
       });
+    }
+
+    // Subfinder aggregate → per-host httpx + takeover nuclei (cap)
+    if (/subfinder/i.test(f.checkId)) {
+      const hosts = extractHostsFromText(blob).slice(0, 8);
+      for (const host of hosts) {
+        if (tasks.length >= 12) break;
+        const url = host.includes('://') ? host : `https://${host}`;
+        if (!evaluateScope(url, scope).allowed) continue;
+        push({
+          tool: 'httpx',
+          target: url,
+          args: { flags: '-silent -status-code -title -tech-detect' },
+          timeoutSec: 90,
+          rationale: `httpx live check from subfinder host ${host}`,
+        });
+      }
+      if (hosts.length) {
+        push({
+          tool: 'nuclei',
+          target: hosts[0]!.includes('://') ? hosts[0]! : `https://${hosts[0]}`,
+          args: {
+            flags: '-severity critical,high,medium -silent -c 20',
+            templates: 'takeovers,dns,misconfiguration',
+          },
+          timeoutSec: 300,
+          rationale: 'Nuclei takeovers after subdomain enum',
+        });
+      }
     }
 
     if (/graphql|api-schema|swagger|openapi|katana/i.test(f.checkId)) {
@@ -285,6 +316,21 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
       });
     }
 
+    // Katana interesting URLs with params → sqlmap (capped)
+    if (/katana/i.test(f.checkId)) {
+      const urls = extractUrlsFromText(blob).filter((u) => /[?&]\w+=/.test(u)).slice(0, 4);
+      for (const u of urls) {
+        if (tasks.length >= 12) break;
+        push({
+          tool: 'sqlmap',
+          target: u,
+          args: { flags: '--batch --level=2 --risk=1 --random-agent' },
+          timeoutSec: 360,
+          rationale: `sqlmap on katana param URL`,
+        });
+      }
+    }
+
     if (/[?&]\w+=/.test(target) || /sql|injection|xss|ssrf/i.test(f.checkId + f.title)) {
       if (/[?&]\w+=/.test(target)) {
         push({
@@ -297,7 +343,7 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
       }
     }
 
-    if (/secret|exposed|bucket|git|env/i.test(f.checkId + f.title)) {
+    if (/secret|exposed|bucket|git|env|sourcemap|actuator/i.test(f.checkId + f.title)) {
       const origin = originOf(target);
       if (origin) {
         push({
@@ -310,7 +356,30 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
           timeoutSec: 180,
           rationale: `Fuzz near disclosure from ${f.checkId}`,
         });
+        push({
+          tool: 'nuclei',
+          target: origin,
+          args: {
+            flags: '-severity critical,high,medium -silent -c 20',
+            templates: 'exposures,misconfiguration,tokens',
+          },
+          timeoutSec: 300,
+          rationale: `Nuclei exposures near ${f.checkId}`,
+        });
       }
+    }
+
+    if (/cors-misconfig|insecure-cookies|weak-csp/i.test(f.checkId)) {
+      push({
+        tool: 'nuclei',
+        target: originOf(target) || target,
+        args: {
+          flags: '-severity critical,high,medium -silent -c 15',
+          templates: 'misconfiguration,exposures',
+        },
+        timeoutSec: 240,
+        rationale: `Misconfig pack after ${f.checkId}`,
+      });
     }
   }
 
@@ -407,6 +476,34 @@ function originOf(target: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Pull hostnames from subfinder-style evidence blobs. */
+export function extractHostsFromText(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of text.match(/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/gi) || []) {
+    const h = m.toLowerCase();
+    if (h.includes('://')) continue;
+    if (/^(http|https|www)$/i.test(h)) continue;
+    if (seen.has(h)) continue;
+    seen.add(h);
+    out.push(h);
+  }
+  return out;
+}
+
+/** Pull absolute URLs from crawl evidence. */
+export function extractUrlsFromText(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of text.match(/https?:\/\/[^\s"'<>]+/gi) || []) {
+    const u = m.replace(/[.,;)]+$/, '');
+    if (seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  return out;
 }
 
 function clampTimeout(n: number | undefined): number {

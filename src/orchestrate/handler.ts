@@ -119,7 +119,7 @@ export async function handleParsedCommand(
         outOfScope: [],
         authorized: true,
       };
-      const md = draftDisclosure(findings, scope);
+      const md = draftDisclosure(findings, scope, { submitReadyOnly: true });
       const text = md.length > 3500 ? `${md.slice(0, 3500)}\n…(truncated)` : md;
       return { ok: true, text, data: { markdown: md } };
     }

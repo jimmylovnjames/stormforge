@@ -54,17 +54,34 @@ export function draftFinding(finding: Finding, scope: Scope): string {
 }
 
 /** A combined disclosure document for a whole program. */
-export function draftDisclosure(findings: Finding[], scope: Scope): string {
-  const sorted = [...findings].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+export function draftDisclosure(
+  findings: Finding[],
+  scope: Scope,
+  opts: { submitReadyOnly?: boolean; minSeverity?: Finding['severity'] } = {},
+): string {
+  const minRank = severityRank(opts.minSeverity ?? 'info');
+  let filtered = findings.filter((f) => severityRank(f.severity) >= minRank);
+  if (opts.submitReadyOnly) {
+    const ready = filtered.filter((f) => f.submitReady === true || (!f.needsManualReview && severityRank(f.severity) >= 3));
+    if (ready.length) filtered = ready;
+  }
+  const sorted = [...filtered].sort((a, b) => {
+    const sev = severityRank(b.severity) - severityRank(a.severity);
+    if (sev !== 0) return sev;
+    return (b.confidence ?? 0) - (a.confidence ?? 0);
+  });
   const sections = sorted.map((f) => draftFinding(f, scope));
+  const dropped = findings.length - sorted.length;
   const header = [
     `# Security Findings — ${scope.program}`,
     '',
     `Platform: ${platformLabel(scope.platform)}`,
-    `Total findings: ${findings.length}`,
+    `Findings in report: ${sorted.length}${dropped ? ` (${dropped} filtered as lower-signal)` : ''} / ${findings.length} total`,
+    opts.submitReadyOnly ? 'Filter: prefer submitReady / high|critical confirmed' : '',
     scope.notes ? `Scope reference: ${scope.notes}` : '',
     '',
     'All testing was non-destructive and limited to the authorized scope.',
+    'StormForge never auto-submits — review every finding before filing.',
     '',
     '---',
     '',

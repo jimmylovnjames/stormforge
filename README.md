@@ -14,10 +14,13 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 ┌──────────────────────────────────────────────────────────────┐
 │  Cloudflare Worker (C2)                                       │
 │  • LLM-powered attack surface planner                        │
-│  • Passive detection checks (headers, CORS, exposed files)   │
-│  • Task queue (KV-backed)                                    │
-│  • Findings store + report drafter                           │
-│  • Dashboard UI                                              │
+│  • Passive detection (headers, CORS trust bypass, cookies,   │
+│    exposed files, OpenAPI/Swagger, GraphQL introspection,    │
+│    weak CSP, source maps, secrets)                           │
+│  • Evolved finding→task fan-out (httpx/nuclei/sqlmap/…)      │
+│  • Task queue (KV-backed leases)                             │
+│  • Findings store + submit-ready report drafter              │
+│  • Dashboard + Grok mobile orchestrator (`/m`)               │
 └──────────────────────┬───────────────────────────────────────┘
                        │ HTTPS (poll/complete)
 ┌──────────────────────▼───────────────────────────────────────┐
@@ -25,7 +28,7 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 │  • Polls C2 for pending tasks                                │
 │  • Executes: nmap, nuclei, httpx, subfinder, katana,         │
 │    ffuf, sqlmap, gobuster                                    │
-│  • Parses output into structured findings                    │
+│  • Parses tool output into structured findings               │
 │  • Reports results back to C2                                │
 └──────────────────────────────────────────────────────────────┘
 ```
