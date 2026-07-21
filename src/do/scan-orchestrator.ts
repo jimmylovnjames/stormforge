@@ -7,7 +7,7 @@ import { runScan } from '../engine/scanner.js';
 import { FindingsStore } from '../findings/store.js';
 import { dispatchFollowUpsFromFindings } from '../planning/dispatch-followups.js';
 import { highImpactFindings, shouldAutoDraft } from '../findings/prioritize.js';
-import { draftDisclosure } from '../report/drafter.js';
+import { draftBountyAutomation, draftDisclosure } from '../report/drafter.js';
 
 interface ScanState {
   status: 'idle' | 'running' | 'done' | 'error';
@@ -68,11 +68,12 @@ export class ScanOrchestrator {
         { scanId: report.scanId, maxTasks: 8 },
       );
 
-      // Auto-draft a disclosure when high/critical hits land (operator still reviews).
+      // Auto-draft disclosure + platform bounty packs when high/critical hits land.
       let draftStored = false;
       if (shouldAutoDraft(report.findings) && this.env.STORMFORGE_KV) {
         const impactful = highImpactFindings(report.findings);
         const markdown = draftDisclosure(impactful, req.scope);
+        const bounty = draftBountyAutomation(impactful, req.scope);
         await this.env.STORMFORGE_KV.put(
           `draft:${req.scope.program}:${report.scanId}`,
           JSON.stringify({
@@ -81,9 +82,29 @@ export class ScanOrchestrator {
             createdAt: new Date().toISOString(),
             findingCount: impactful.length,
             markdown,
+            bounty: {
+              platform: bounty.platform,
+              count: bounty.count,
+              packets: bounty.packets,
+            },
           }),
           { expirationTtl: 7776000 },
         );
+        if (bounty.count > 0) {
+          await this.env.STORMFORGE_KV.put(
+            `bounty:${req.scope.program}:latest`,
+            JSON.stringify({
+              program: req.scope.program,
+              scanId: report.scanId,
+              platform: bounty.platform,
+              createdAt: new Date().toISOString(),
+              count: bounty.count,
+              packets: bounty.packets,
+              combinedMarkdown: bounty.combinedMarkdown,
+            }),
+            { expirationTtl: 7776000 },
+          );
+        }
         draftStored = true;
       }
 

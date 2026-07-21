@@ -2,6 +2,7 @@
 
 import type { Finding, Severity } from '../types.js';
 import { SEVERITY_ORDER } from '../types.js';
+import { estimateCvss } from '../report/cvss.js';
 
 /** Prefer confirmed critical/high injection & takeover classes for executor waves. */
 const BOOST: Record<string, number> = {
@@ -28,10 +29,12 @@ export function prioritizeFindings(findings: Finding[]): Finding[] {
 }
 
 export function score(f: Finding): number {
+  const cvss = estimateCvss(f).score;
   const sev = SEVERITY_ORDER[f.severity as Severity] ?? 0;
   const boost = BOOST[f.checkId] ?? 0;
   const reviewPenalty = f.needsManualReview ? -5 : 5;
-  return sev * 100 + boost + reviewPenalty;
+  // CVSS dominates; severity/boost break ties for autonomy budgeting.
+  return cvss * 100 + sev * 10 + boost + reviewPenalty;
 }
 
 /** True when the scan warrants an automatic disclosure draft. */

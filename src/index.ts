@@ -14,11 +14,13 @@ import type { Env, ScanRequest, Scope, ToolTask, ToolTaskResult, ToolName, Sever
 import { ScanOrchestrator } from './do/scan-orchestrator.js';
 import { partitionByScope, assertInScope } from './scope/scope-guard.js';
 import { FindingsStore, summarizeSecretFindings } from './findings/store.js';
-import { draftDisclosure } from './report/drafter.js';
+import { draftBountyAutomation, draftDisclosure } from './report/drafter.js';
 import { listChecks } from './detect/registry.js';
 import { DASHBOARD_HTML } from './dashboard-html.js';
 import { planAttackSurface } from './planning/vuln-planner.js';
 import { dispatchFollowUpsFromFindings } from './planning/dispatch-followups.js';
+import { estimateCvss, sortByCvss } from './report/cvss.js';
+import type { BountyPlatform } from './report/templates.js';
 
 export { ScanOrchestrator };
 
@@ -65,6 +67,17 @@ export default {
       const draftsMatch = pathname.match(/^\/api\/drafts\/([^/]+)$/);
       if (request.method === 'GET' && draftsMatch) {
         return await handleListDrafts(decodeURIComponent(draftsMatch[1]), env);
+      }
+
+      // GET /api/bounty/:program?platform=hackerone|immunefi — CVSS-ranked bounty packs
+      const bountyMatch = pathname.match(/^\/api\/bounty\/([^/]+)$/);
+      if (request.method === 'GET' && bountyMatch) {
+        return await handleBountyPacks(decodeURIComponent(bountyMatch[1]), url, env);
+      }
+
+      // POST /api/bounty/generate — body: { findings?, program, platform, scope? }
+      if (request.method === 'POST' && pathname === '/api/bounty/generate') {
+        return await handleBountyGenerate(request, env);
       }
 
       if (request.method === 'GET' && pathname === '/api/checks') {
@@ -402,6 +415,7 @@ async function handleListDrafts(program: string, env: Env): Promise<Response> {
         createdAt: string;
         findingCount: number;
         markdown: string;
+        bounty?: unknown;
       };
       drafts.push({
         key: key.name,
@@ -409,12 +423,117 @@ async function handleListDrafts(program: string, env: Env): Promise<Response> {
         createdAt: parsed.createdAt,
         findingCount: parsed.findingCount,
         markdownPreview: parsed.markdown.slice(0, 400),
+        hasBountyPacks: Boolean(parsed.bounty),
       });
     } catch {
       /* skip bad draft */
     }
   }
   return json({ program, drafts, total: drafts.length });
+}
+
+async function handleBountyPacks(program: string, url: URL, env: Env): Promise<Response> {
+  const store = new FindingsStore(env.STORMFORGE_KV);
+  const findings = await store.getAll(program);
+  if (!findings.length) return json({ error: 'No findings for program' }, 404);
+
+  const platformParam = url.searchParams.get('platform');
+  const platform: BountyPlatform | undefined =
+    platformParam === 'immunefi' || platformParam === 'hackerone' ? platformParam : undefined;
+
+  const scope: Scope = {
+    program,
+    platform: platform ?? 'hackerone',
+    inScope: [],
+    outOfScope: [],
+    authorized: true,
+  };
+  const pack = draftBountyAutomation(findings, scope, platform);
+  const ranked = sortByCvss(findings).map((f) => {
+    const cvss = estimateCvss(f);
+    return {
+      id: f.id,
+      checkId: f.checkId,
+      title: f.title,
+      severity: f.severity,
+      target: f.target,
+      cvssScore: cvss.score,
+      cvssVector: cvss.vector,
+      cvssRating: cvss.rating,
+    };
+  });
+
+  // Persist latest bounty automation snapshot for the dashboard.
+  await env.STORMFORGE_KV.put(
+    `bounty:${program}:latest`,
+    JSON.stringify({
+      program,
+      platform: pack.platform,
+      createdAt: new Date().toISOString(),
+      count: pack.count,
+      packets: pack.packets,
+      combinedMarkdown: pack.combinedMarkdown,
+    }),
+    { expirationTtl: 7776000 },
+  );
+
+  return json({
+    program,
+    platform: pack.platform,
+    bountyDrafts: pack.count,
+    packets: pack.packets,
+    rankedByCvss: ranked,
+    combinedMarkdown: pack.combinedMarkdown,
+  });
+}
+
+async function handleBountyGenerate(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json()) as {
+    program: string;
+    platform?: BountyPlatform;
+    scope?: Scope;
+    findings?: import('./types.js').Finding[];
+  };
+  if (!body.program) return json({ error: 'program required' }, 400);
+
+  const scope: Scope =
+    body.scope ??
+    ({
+      program: body.program,
+      platform: body.platform === 'immunefi' ? 'immunefi' : 'hackerone',
+      inScope: [],
+      outOfScope: [],
+      authorized: true,
+    } satisfies Scope);
+
+  let findings = body.findings;
+  if (!findings?.length) {
+    const store = new FindingsStore(env.STORMFORGE_KV);
+    findings = await store.getAll(body.program);
+  }
+  if (!findings?.length) return json({ error: 'No findings to draft' }, 404);
+
+  const pack = draftBountyAutomation(findings, scope, body.platform);
+  await env.STORMFORGE_KV.put(
+    `bounty:${body.program}:latest`,
+    JSON.stringify({
+      program: body.program,
+      platform: pack.platform,
+      createdAt: new Date().toISOString(),
+      count: pack.count,
+      packets: pack.packets,
+      combinedMarkdown: pack.combinedMarkdown,
+    }),
+    { expirationTtl: 7776000 },
+  );
+
+  return json({
+    status: 'drafted',
+    platform: pack.platform,
+    bountyDrafts: pack.count,
+    packets: pack.packets,
+    note: 'Never auto-submitted. Copy markdown/fields into the platform UI after review.',
+  });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
