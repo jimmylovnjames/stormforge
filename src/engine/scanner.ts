@@ -23,6 +23,11 @@ import {
   buildSsrfRedirectProbeUrls,
   shouldProbeSsrfRedirect,
 } from '../recon/ssrf-probes.js';
+import {
+  CMD_EXEC_PATHS,
+  buildCommandInjectionProbeUrls,
+  shouldProbeCommandInjection,
+} from '../recon/command-probes.js';
 import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
@@ -143,7 +148,23 @@ export async function runScan(
     });
   }
 
-  // 7. Run detection checks over all probes.
+  // 7. Safe command-injection canary follow-ups (;|& echo / id on exec-like paths).
+  const cmdUrls = collectCommandInjectionFollowUps(probes);
+  const { allowed: allowedCmd } = partitionByScope(cmdUrls, req.scope);
+  const freshCmd = allowedCmd.filter((u) => !probes.some((p) => p.url === u));
+  if (freshCmd.length) {
+    await mapWithConcurrency(freshCmd, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'text/plain, text/html, application/json;q=0.9, */*;q=0.8' },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'command-injection-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 8. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
     const findings = runChecks(probe, { scope: req.scope, siblings: probes });
@@ -152,7 +173,7 @@ export async function runScan(
   const findings = [...dedup.values()];
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 8. Assemble report.
+  // 9. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -265,6 +286,30 @@ export function collectSsrfRedirectFollowUps(probes: ProbeResult[]): SsrfFollowU
   return out;
 }
 
+/** Build command-injection canary follow-ups for exec-like endpoints (capped). */
+export function collectCommandInjectionFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  let budget = 18;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeCommandInjection(p)) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    for (const url of buildCommandInjectionProbeUrls(cleanBase, 2)) {
+      if (budget <= 0) break;
+      out.add(url);
+      budget--;
+    }
+  }
+  return [...out];
+}
+
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */
 function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
   const urls = new Set<string>();
@@ -274,6 +319,7 @@ function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
     ...AUTH_IDOR_PATHS,
     ...REFLECTION_PATHS,
     ...REDIRECT_SSRF_PATHS,
+    ...CMD_EXEC_PATHS,
     ...SECRET_LEAK_PATHS,
     ...SENSITIVE_PATHS,
     ...extraPaths,

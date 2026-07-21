@@ -115,6 +115,9 @@ function impactStatement(f: Finding): string {
   if (f.cwe === 'CWE-918') {
     return 'Server-side request forgery can reach internal services and cloud metadata endpoints, often yielding credentials and full environment compromise.';
   }
+  if (f.cwe === 'CWE-78') {
+    return 'OS command injection allows attackers to execute system commands on the server, typically leading to full remote code execution and host takeover.';
+  }
 
   switch (f.severity) {
     case 'critical':
