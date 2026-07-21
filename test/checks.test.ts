@@ -5,6 +5,7 @@ import { exposedFilesCheck } from '../src/detect/checks/exposed-files.js';
 import { cookiesCheck, splitSetCookie } from '../src/detect/checks/cookies.js';
 import { versionCveCheck } from '../src/detect/checks/version-cve.js';
 import { apiSchemaExposureCheck } from '../src/detect/checks/api-schema-exposure.js';
+import { graphqlIntrospectionCheck } from '../src/detect/checks/graphql-introspection.js';
 import { scanSecrets } from '../src/recon/secrets.js';
 import type { ProbeResult, Scope, CheckContext } from '../src/types.js';
 
@@ -122,14 +123,16 @@ describe('apiSchemaExposureCheck', () => {
     );
     expect(f).toHaveLength(1);
     expect(f[0].severity).toBe('high');
-    expect(f[0].title).toContain('OpenAPI 3');
+    expect(f[0].title).toMatch(/OpenAPI 3/);
+    expect(f[0].title).toContain('paths');
   });
 
-  it('flags Swagger 2.0 specs', () => {
+  it('flags Swagger 2.0 specs as high', () => {
     const body = '{"swagger":"2.0","info":{"title":"t","version":"1"},"paths":{"/x":{}}}';
     const f = apiSchemaExposureCheck.run(probe({ url: 'https://a.x.com/swagger.json', body }), ctx);
     expect(f).toHaveLength(1);
-    expect(f[0].title).toContain('Swagger 2.0');
+    expect(f[0].severity).toBe('high');
+    expect(f[0].title).toMatch(/Swagger 2\.0/);
   });
 
   it('does not flag unrelated JSON that mentions openapi in a string', () => {
@@ -140,6 +143,27 @@ describe('apiSchemaExposureCheck', () => {
     expect(f).toHaveLength(0);
   });
 
+  it('flags Swagger UI HTML as high', () => {
+    const f = apiSchemaExposureCheck.run(
+      probe({
+        url: 'https://a.x.com/swagger-ui/',
+        headers: { 'content-type': 'text/html' },
+        body: '<div id="swagger-ui"></div><script>SwaggerUIBundle({url:"/swagger.json"})</script>',
+      }),
+      ctx,
+    );
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('high');
+    expect(f[0].needsManualReview).toBe(true);
+  });
+
+  it('ignores non-2xx responses', () => {
+    const body = '{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{}}';
+    expect(apiSchemaExposureCheck.run(probe({ status: 404, body }), ctx)).toHaveLength(0);
+  });
+});
+
+describe('graphqlIntrospectionCheck', () => {
   it('flags GraphQL introspection payloads as high without manual review', () => {
     const body = JSON.stringify({
       data: {
@@ -149,14 +173,15 @@ describe('apiSchemaExposureCheck', () => {
         },
       },
     });
-    const f = apiSchemaExposureCheck.run(probe({ url: 'https://a.x.com/graphql', body }), ctx);
+    const f = graphqlIntrospectionCheck.run(probe({ url: 'https://a.x.com/graphql', body }), ctx);
     expect(f).toHaveLength(1);
     expect(f[0].severity).toBe('high');
     expect(f[0].needsManualReview).toBe(false);
+    expect(f[0].title).toContain('introspection');
   });
 
-  it('flags GraphiQL HTML explorer', () => {
-    const f = apiSchemaExposureCheck.run(
+  it('flags GraphiQL HTML explorer as high', () => {
+    const f = graphqlIntrospectionCheck.run(
       probe({
         url: 'https://a.x.com/graphiql',
         headers: { 'content-type': 'text/html' },
@@ -169,22 +194,14 @@ describe('apiSchemaExposureCheck', () => {
     expect(f[0].severity).toBe('high');
   });
 
-  it('flags Swagger UI HTML as medium', () => {
-    const f = apiSchemaExposureCheck.run(
+  it('does not flag GraphQL error-only bodies without __schema', () => {
+    const f = graphqlIntrospectionCheck.run(
       probe({
-        url: 'https://a.x.com/swagger-ui/',
-        headers: { 'content-type': 'text/html' },
-        body: '<div id="swagger-ui"></div><script>SwaggerUIBundle({url:"/swagger.json"})</script>',
+        url: 'https://a.x.com/graphql',
+        body: '{"errors":[{"message":"Must provide query string."}]}',
       }),
       ctx,
     );
-    expect(f).toHaveLength(1);
-    expect(f[0].severity).toBe('medium');
-    expect(f[0].needsManualReview).toBe(true);
-  });
-
-  it('ignores non-200 responses', () => {
-    const body = '{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{}}';
-    expect(apiSchemaExposureCheck.run(probe({ status: 404, body }), ctx)).toHaveLength(0);
+    expect(f).toHaveLength(0);
   });
 });

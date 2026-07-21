@@ -1,12 +1,18 @@
 // The scan engine: turns a ScanRequest into a ScanReport.
 //
 // Flow: expand targets -> scope-filter -> bounded-concurrency probe ->
-// run checks -> collect + dedupe findings. Entirely non-destructive.
+// parse 2xx bodies -> GraphQL introspection follow-ups -> run checks ->
+// collect + dedupe findings. Entirely non-destructive (GET/HEAD/OPTIONS only).
 
 import type { Env, Finding, ProbeResult, ScanReport, ScanRequest } from '../types.js';
 import { HttpClient, RateLimiter } from '../recon/http-client.js';
 import { partitionByScope, hostOf } from '../scope/scope-guard.js';
 import { SENSITIVE_PATHS, API_PROBE_PATHS } from '../recon/wordlists.js';
+import {
+  buildGraphqlIntrospectionUrl,
+  parseBodySignals,
+  shouldFollowUpGraphqlIntrospection,
+} from '../recon/body-parse.js';
 import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
@@ -34,11 +40,12 @@ export async function runScan(
   const urls = buildProbeUrls(allowed, req.extraPaths ?? []);
   const { allowed: allowedUrls } = partitionByScope(urls, req.scope);
 
-  // 2. Probe with bounded concurrency.
+  // 2. Probe with bounded concurrency; attach body signals on 2xx.
   const probes: ProbeResult[] = [];
   let probed = 0;
   await mapWithConcurrency(allowedUrls, concurrency, async (url) => {
     const p = await client.probe(url, { headers: { origin: PROBE_ORIGIN } });
+    attachSignals(p);
     probes.push(p);
     probed++;
     onProgress?.({ phase: 'probe', probed, total: allowedUrls.length, findings: 0 });
@@ -52,22 +59,47 @@ export async function runScan(
     const fresh = allowedExtra.filter((u) => !probes.some((p) => p.url === u));
     await mapWithConcurrency(fresh, concurrency, async (url) => {
       const p = await client.probe(url, { headers: { origin: PROBE_ORIGIN } });
+      attachSignals(p);
       probes.push(p);
       probed++;
       onProgress?.({ phase: 'plan-probe', probed, total: allowedUrls.length + fresh.length, findings: 0 });
     });
   }
 
-  // 4. Run detection checks over all probes.
+  // 4. Safe GraphQL introspection follow-ups (GET + query param only).
+  const introspectionUrls = collectGraphqlFollowUps(probes);
+  const { allowed: allowedIntrospection } = partitionByScope(introspectionUrls, req.scope);
+  const freshIntrospection = allowedIntrospection.filter((u) => !probes.some((p) => p.url === u));
+  if (freshIntrospection.length) {
+    await mapWithConcurrency(freshIntrospection, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: {
+          origin: PROBE_ORIGIN,
+          accept: 'application/json, application/graphql-response+json, text/html',
+        },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({
+        phase: 'graphql-introspect',
+        probed,
+        total: allowedUrls.length + freshIntrospection.length,
+        findings: 0,
+      });
+    });
+  }
+
+  // 5. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
     const findings = runChecks(probe, { scope: req.scope, siblings: probes });
     for (const f of findings) dedup.set(f.id, f);
   }
   const findings = [...dedup.values()];
-  onProgress?.({ phase: 'analyze', probed, total: allowedUrls.length, findings: findings.length });
+  onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 5. Assemble report.
+  // 6. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -80,6 +112,37 @@ export async function runScan(
     findings,
     summary,
   };
+}
+
+/** Parse body signals for successful responses so checks can use confirmed markers. */
+export function attachSignals(probe: ProbeResult): void {
+  if (probe.error || !probe.body) return;
+  if (probe.status < 200 || probe.status >= 300) {
+    // Still parse soft GraphQL hints on 4xx (e.g. "Must provide query string").
+    if (probe.status >= 400 && probe.status < 500) {
+      probe.signals = parseBodySignals(probe.body, probe.headers, probe.status);
+    }
+    return;
+  }
+  probe.signals = parseBodySignals(probe.body, probe.headers, probe.status);
+}
+
+/** Build introspection follow-up URLs from candidate probes (deduped). */
+export function collectGraphqlFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  for (const p of probes) {
+    const signals =
+      p.signals ??
+      (p.body ? parseBodySignals(p.body, p.headers, p.status) : undefined);
+    if (!signals) continue;
+    if (!shouldFollowUpGraphqlIntrospection(p.url, p.status, signals)) continue;
+    try {
+      out.add(buildGraphqlIntrospectionUrl(p.finalUrl ?? p.url));
+    } catch {
+      /* ignore bad URLs */
+    }
+  }
+  return [...out];
 }
 
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */

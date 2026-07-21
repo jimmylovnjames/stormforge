@@ -34,6 +34,21 @@ export interface Scope {
   notes?: string;
 }
 
+/**
+ * Structured body signals filled by the scanner for successful (2xx) probes.
+ * Kept optional so unit tests can fabricate bare ProbeResults.
+ */
+export interface BodySignals {
+  kind: 'json' | 'html' | 'yaml' | 'text' | 'empty';
+  openApiPathCount: number;
+  openApiVersion?: string;
+  graphqlIntrospection: boolean;
+  graphqlExplorer: boolean;
+  swaggerUi: boolean;
+  graphqlEndpointHint: boolean;
+  preview: string;
+}
+
 /** Result of a single non-destructive HTTP probe. */
 export interface ProbeResult {
   url: string;
@@ -49,6 +64,11 @@ export interface ProbeResult {
   elapsedMs: number;
   /** Populated when the probe failed (DNS, TLS, timeout, refused-by-scope). */
   error?: string;
+  /**
+   * Parsed body signals for 2xx responses. Set by the scan engine before
+   * detection checks run; checks may recompute via `parseBodySignals` if absent.
+   */
+  signals?: BodySignals;
 }
 
 /** A detection produced by a Check. */
