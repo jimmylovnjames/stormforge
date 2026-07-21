@@ -70,7 +70,16 @@ export function impactForFinding(f: Finding): string {
     return 'Mass assignment lets attackers set privileged model fields (roles, flags) and escalate access without a direct authorization flaw.';
   }
   if (f.cwe === 'CWE-200') {
+    if (f.checkId === 'robots-disclosure') {
+      return 'robots.txt Disallow entries advertise sensitive paths that attackers use as a free recon map to locate admin panels, backups, and credential files.';
+    }
     return 'Public object-store listings expose file keys and often leak backups, credentials, source archives, and personal data at scale.';
+  }
+  if (f.cwe === 'CWE-942') {
+    return 'JSONP callback reflection lets any origin load the endpoint via <script> and read the wrapped response, bypassing CORS and often exposing account or API data.';
+  }
+  if (f.cwe === 'CWE-540') {
+    return 'Public source maps (especially with sourcesContent) expose original client source, internal paths, and occasionally secrets that were meant to stay behind minification.';
   }
   if (f.cwe === 'CWE-444') {
     if (f.checkId === 'cache-poisoning') {

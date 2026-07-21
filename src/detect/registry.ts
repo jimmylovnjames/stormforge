@@ -29,6 +29,9 @@ import { subdomainTakeoverCheck } from './checks/subdomain-takeover.js';
 import { debugDisclosureCheck } from './checks/debug-disclosure.js';
 import { oauthMisconfigCheck } from './checks/oauth.js';
 import { wsSamlDiscoveryCheck } from './checks/ws-saml-discovery.js';
+import { robotsDisclosureCheck } from './checks/robots-disclosure.js';
+import { jsonpCheck } from './checks/jsonp.js';
+import { sourcemapCheck } from './checks/sourcemap.js';
 import { secretsExposureCheck } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -60,6 +63,9 @@ const REGISTRY: Check[] = [
   debugDisclosureCheck,
   oauthMisconfigCheck,
   wsSamlDiscoveryCheck,
+  robotsDisclosureCheck,
+  jsonpCheck,
+  sourcemapCheck,
 ];
 
 export function registerCheck(check: Check): void {

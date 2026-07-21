@@ -78,6 +78,15 @@ import {
   shouldProbeHpp,
 } from '../recon/hpp-probes.js';
 import {
+  JSONP_PATHS,
+  buildJsonpProbeUrls,
+  shouldProbeJsonp,
+} from '../recon/jsonp-probes.js';
+import {
+  buildSourcemapFollowUpUrls,
+  shouldProbeSourcemap,
+} from '../recon/sourcemap-probes.js';
+import {
   BUCKET_APP_PATHS,
   buildBucketProbeUrls,
   shouldProbeBucket,
@@ -390,6 +399,25 @@ export async function runScan(
     });
   }
 
+  // 12c. JSONP callback canaries (GET query params only).
+  const jsonpUrls = collectJsonpFollowUps(probes);
+  const { allowed: allowedJsonp } = partitionByScope(jsonpUrls, req.scope);
+  const freshJsonp = allowedJsonp.filter((u) => !probes.some((p) => p.url === u));
+  if (freshJsonp.length) {
+    await mapWithConcurrency(freshJsonp, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: {
+          origin: PROBE_ORIGIN,
+          accept: 'application/javascript, application/json, text/javascript;q=0.9, */*;q=0.5',
+        },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'jsonp-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
   // 13. Cloud bucket / object-store listing probes.
   const bucketUrls = collectBucketFollowUps(probes);
   const { allowed: allowedBucket } = partitionByScope(bucketUrls, req.scope);
@@ -511,6 +539,22 @@ export async function runScan(
         onProgress?.({ phase: 'auth-idor-neighbors', probed, total: probes.length, findings: 0 });
       });
     }
+  }
+
+  // 16b. Source map follow-ups from JS/CSS bundles (GET .map only).
+  const sourcemapUrls = collectSourcemapFollowUps(probes);
+  const { allowed: allowedMaps } = partitionByScope(sourcemapUrls, req.scope);
+  const freshMaps = allowedMaps.filter((u) => !probes.some((p) => p.url === u)).slice(0, 16);
+  if (freshMaps.length) {
+    await mapWithConcurrency(freshMaps, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'application/json, application/octet-stream;q=0.8, */*;q=0.5' },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'sourcemap-probe', probed, total: probes.length, findings: 0 });
+    });
   }
 
   // 17. Run detection checks over all probes.
@@ -916,6 +960,46 @@ export function collectHppFollowUps(probes: ProbeResult[]): HppFollowUp[] {
   return out;
 }
 
+/** Build JSONP callback canary follow-ups (capped). */
+export function collectJsonpFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  let budget = 14;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeJsonp(p)) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    for (const url of buildJsonpProbeUrls(cleanBase, 2)) {
+      if (budget <= 0) break;
+      out.add(url);
+      budget--;
+    }
+  }
+  return [...out];
+}
+
+/** Resolve same-origin .map URLs advertised by JS/CSS probes. */
+export function collectSourcemapFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  let budget = 16;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeSourcemap(p)) continue;
+    for (const url of buildSourcemapFollowUpUrls(p)) {
+      if (budget <= 0) break;
+      out.add(url);
+      budget--;
+    }
+  }
+  return [...out];
+}
+
 export function collectBucketFollowUps(probes: ProbeResult[]): string[] {
   const out = new Set<string>();
   let budget = 12;
@@ -1009,6 +1093,8 @@ export function collectCanaryRefreshUrls(
   }
   for (const item of collectHppFollowUps(probes)) out.add(item.url);
   for (const item of collectHostHeaderFollowUps(probes)) out.add(item.url);
+  for (const u of collectJsonpFollowUps(probes)) out.add(u);
+  for (const u of collectSourcemapFollowUps(probes)) out.add(u);
   return [...out];
 }
 
@@ -1121,6 +1207,7 @@ function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
     ...CRLF_PATHS,
     ...PP_PATHS,
     ...HPP_PATHS,
+    ...JSONP_PATHS,
     ...BUCKET_APP_PATHS,
     ...CACHE_SENSITIVE_PATHS,
     ...SECRET_LEAK_PATHS,

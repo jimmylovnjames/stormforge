@@ -312,13 +312,27 @@ export function planFollowUpTasks(
     }
 
     // GraphQL / schema → katana + nuclei
-    if (/graphql|api-schema|swagger|openapi/i.test(f.checkId)) {
+    if (/graphql|api-schema|swagger|openapi|robots-disclosure|sourcemap/i.test(f.checkId)) {
       push({
         tool: 'katana',
         target,
         args: { flags: '-silent -d 2 -jc' },
         timeoutSec: 120,
         rationale: `Crawl API/GraphQL surface from ${f.checkId}`,
+      });
+    }
+
+    // JSONP → nuclei exposures around the same origin
+    if (/jsonp-callback/i.test(f.checkId)) {
+      push({
+        tool: 'nuclei',
+        target,
+        args: {
+          flags: '-severity critical,high,medium -silent -c 20',
+          templates: 'exposures,misconfiguration,vulnerabilities',
+        },
+        timeoutSec: 300,
+        rationale: `Nuclei after confirmed JSONP on ${target}`,
       });
     }
 

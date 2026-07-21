@@ -357,6 +357,15 @@ export function planPathsFromFindings(findings: Finding[]): PlannerSuggestion {
           '/cable',
         );
         break;
+      case 'robots-disclosure':
+        paths.push('/robots.txt', '/sitemap.xml', '/admin', '/.env', '/.git/config', '/backup/');
+        break;
+      case 'jsonp-callback':
+        paths.push('/api', '/api/v1/users', '/api/v1/me', '/api/search', '/search', '/jsonp');
+        break;
+      case 'sourcemap-exposure':
+        paths.push('/static/', '/assets/', '/js/', '/static/js/', '/main.js', '/app.js', '/bundle.js');
+        break;
       default:
         break;
     }

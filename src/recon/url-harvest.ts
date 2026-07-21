@@ -2,6 +2,7 @@
 
 import type { ProbeResult } from '../types.js';
 import { extractOpenApiPaths } from './body-parse.js';
+import { extractRobotsPaths, extractSitemapLocPaths } from './robots-sitemap.js';
 
 const MAX_HARVEST = 40;
 
@@ -64,6 +65,19 @@ export function harvestPathsFromProbe(probe: ProbeResult): string[] {
   const out = new Set<string>();
   const body = probe.body ?? '';
   const ct = (probe.headers['content-type'] ?? '').toLowerCase();
+  const path = safePath(probe.url);
+
+  if (path.endsWith('/robots.txt') || (/^\s*User-agent:/im.test(body) && /^\s*Disallow:/im.test(body))) {
+    for (const p of extractRobotsPaths(body)) out.add(p);
+  }
+
+  if (
+    path.endsWith('/sitemap.xml') ||
+    path.endsWith('/sitemap_index.xml') ||
+    ((ct.includes('xml') || /^\s*</.test(body)) && /<urlset|<sitemapindex|<loc>/i.test(body))
+  ) {
+    for (const p of extractSitemapLocPaths(body, probe.finalUrl ?? probe.url)) out.add(p);
+  }
 
   if (
     probe.signals?.openApiVersion ||
@@ -79,8 +93,8 @@ export function harvestPathsFromProbe(probe: ProbeResult): string[] {
   if (ct.includes('html') || /^\s*</.test(body)) {
     for (const u of extractUrlsFromHtml(body, probe.finalUrl ?? probe.url)) {
       try {
-        const path = new URL(u).pathname;
-        if (path && path !== '/') out.add(path);
+        const pathName = new URL(u).pathname;
+        if (pathName && pathName !== '/') out.add(pathName);
       } catch {
         /* skip */
       }
@@ -88,6 +102,14 @@ export function harvestPathsFromProbe(probe: ProbeResult): string[] {
   }
 
   return [...out].filter((p) => p.startsWith('/')).slice(0, MAX_HARVEST);
+}
+
+function safePath(url: string): string {
+  try {
+    return new URL(url).pathname.toLowerCase();
+  } catch {
+    return url.toLowerCase();
+  }
 }
 
 function normalizePath(p: string): string {
