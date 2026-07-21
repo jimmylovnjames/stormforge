@@ -28,6 +28,7 @@ import { cachePoisoningCheck } from './checks/cache-poisoning.js';
 import { subdomainTakeoverCheck } from './checks/subdomain-takeover.js';
 import { debugDisclosureCheck } from './checks/debug-disclosure.js';
 import { oauthMisconfigCheck } from './checks/oauth.js';
+import { wsSamlDiscoveryCheck } from './checks/ws-saml-discovery.js';
 import { secretsExposureCheck } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -58,6 +59,7 @@ const REGISTRY: Check[] = [
   subdomainTakeoverCheck,
   debugDisclosureCheck,
   oauthMisconfigCheck,
+  wsSamlDiscoveryCheck,
 ];
 
 export function registerCheck(check: Check): void {

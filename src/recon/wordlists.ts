@@ -255,3 +255,36 @@ export const BRUTEFORCE_PATHS: string[] = [
   '/api/register',
   '/api/v1/register',
 ];
+
+/**
+ * OIDC/OAuth discovery, SAML metadata, and WebSocket/realtime surfaces.
+ * Merged into Worker probe expansion for federation / realtime mapping.
+ */
+export const FEDERATION_PATHS: string[] = [
+  '/.well-known/openid-configuration',
+  '/.well-known/oauth-authorization-server',
+  '/.well-known/jwks.json',
+  '/.well-known/openid-configuration/jwks',
+  '/oauth/authorize',
+  '/oauth/token',
+  '/oauth2/authorize',
+  '/oauth2/token',
+  '/oauth2/v1/certs',
+  '/saml/metadata',
+  '/saml2/metadata',
+  '/sso/saml/metadata',
+  '/auth/saml/metadata',
+  '/auth/realms/master/.well-known/openid-configuration',
+  '/FederationMetadata/2007-06/FederationMetadata.xml',
+  '/federationmetadata/2007-06/federationmetadata.xml',
+  '/adfs/ls',
+  '/ws',
+  '/ws/v1',
+  '/wss',
+  '/websocket',
+  '/socket.io/',
+  '/socket.io/?EIO=4&transport=polling',
+  '/cable',
+  '/realtime',
+  '/mqtt',
+];

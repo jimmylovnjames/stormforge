@@ -55,6 +55,10 @@ const BODY_RULES: { product: string; regex: RegExp }[] = [
   // Auth / identity surfaces
   { product: 'JWT', regex: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\./ },
   { product: 'OAuth', regex: /"access_token"\s*:|"token_type"\s*:\s*"bearer"/i },
+  { product: 'OIDC', regex: /"issuer"\s*:\s*"https?:\/\/[^"]+".*"jwks_uri"\s*:|"authorization_endpoint"\s*:\s*"https?:\/\//is },
+  { product: 'OpenID', regex: /"issuer"\s*:.*"authorization_endpoint"\s*:/is },
+  { product: 'SAML', regex: /<EntityDescriptor[\s>]|IDPSSODescriptor|SPSSODescriptor/i },
+  { product: 'WebSocket', regex: /"upgrades"\s*:\s*\[[^\]]*websocket|\bnew\s+WebSocket\s*\(/i },
 ];
 
 export function fingerprint(probe: ProbeResult): TechMatch[] {

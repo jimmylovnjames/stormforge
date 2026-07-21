@@ -115,8 +115,36 @@ export const xssInjectionCheck: Check = {
     // ── Weak CSP / unsafe script signals (HTML only) ──────────────────────
     if (isHtml) {
       const csp = probe.headers['content-security-policy'] ?? '';
-      const weak = analyzeCsp(csp);
-      if (weak) {
+      const cspReportOnly = probe.headers['content-security-policy-report-only'] ?? '';
+      const hasSinks = DANGEROUS_SINKS.test(probe.body);
+
+      if (!csp && cspReportOnly) {
+        findings.push({
+          id: makeFindingId(this.id, probe.url, 'csp:report-only'),
+          checkId: this.id,
+          title: 'CSP is Report-Only without an enforcing policy',
+          severity: 'medium',
+          target: probe.url,
+          description:
+            'Only Content-Security-Policy-Report-Only is set; there is no enforcing CSP. Report-Only never blocks XSS — attackers can still execute injected scripts while violations are merely logged.',
+          evidence: `URL: ${probe.url}\nContent-Security-Policy: <absent>\nContent-Security-Policy-Report-Only: ${cspReportOnly.slice(0, 200)}`,
+          reproduction: [
+            `curl -sI '${stripInjectionParams(url)}'`,
+            'Confirm CSP-Report-Only is present and Content-Security-Policy is absent',
+          ],
+          remediation:
+            'Graduate a tested CSP from Report-Only to enforcing Content-Security-Policy; keep reporting as a secondary signal.',
+          cwe: 'CWE-79',
+          references: [
+            'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy-Report-Only',
+            'https://cwe.mitre.org/data/definitions/79.html',
+          ],
+          needsManualReview: true,
+          discoveredAt: new Date().toISOString(),
+        });
+      }
+
+      for (const weak of analyzeCsp(csp, { hasSinks })) {
         findings.push({
           id: makeFindingId(this.id, probe.url, `csp:${weak.kind}`),
           checkId: this.id,
@@ -124,13 +152,13 @@ export const xssInjectionCheck: Check = {
           severity: weak.severity,
           target: probe.url,
           description: weak.detail,
-          evidence: `URL: ${probe.url}\nContent-Security-Policy: ${csp || '<absent>'}\nSinks present: ${DANGEROUS_SINKS.test(probe.body)}`,
+          evidence: `URL: ${probe.url}\nContent-Security-Policy: ${csp || '<absent>'}\nSinks present: ${hasSinks}`,
           reproduction: [
             `curl -sI '${stripInjectionParams(url)}'`,
-            'Inspect Content-Security-Policy for unsafe-inline, unsafe-eval, or wildcard script-src',
+            'Inspect Content-Security-Policy for unsafe-inline, unsafe-eval, wildcard script-src, nonce conflicts, or missing base-uri/object-src',
           ],
           remediation:
-            'Deploy a strict CSP: remove unsafe-inline/unsafe-eval, avoid *, use nonces/hashes for trusted scripts, and pair with HTML encoding.',
+            'Deploy a strict CSP: remove unsafe-inline/unsafe-eval, avoid *, use nonces/hashes for trusted scripts, set base-uri and object-src, and pair with HTML encoding.',
           cwe: 'CWE-79',
           references: [
             'https://cwe.mitre.org/data/definitions/79.html',
@@ -142,7 +170,7 @@ export const xssInjectionCheck: Check = {
       }
 
       // Dangerous sinks without any CSP — elevates XSS impact.
-      if (!csp && DANGEROUS_SINKS.test(probe.body)) {
+      if (!csp && !cspReportOnly && hasSinks) {
         findings.push({
           id: makeFindingId(this.id, probe.url, 'unsafe-sinks'),
           checkId: this.id,
@@ -166,48 +194,96 @@ export const xssInjectionCheck: Check = {
   },
 };
 
-function analyzeCsp(
+export type CspWeakness = {
+  kind: string;
+  title: string;
+  detail: string;
+  severity: Finding['severity'];
+};
+
+/** Analyze an enforcing CSP string for high-signal weaknesses. */
+export function analyzeCsp(
   csp: string,
-): { kind: string; title: string; detail: string; severity: Finding['severity'] } | null {
-  if (!csp) return null;
+  opts: { hasSinks?: boolean } = {},
+): CspWeakness[] {
+  if (!csp) return [];
   const lower = csp.toLowerCase();
+  const out: CspWeakness[] = [];
+
   if (/script-src[^;]*\*/.test(lower) || /default-src[^;]*\*/.test(lower)) {
-    return {
+    out.push({
       kind: 'wildcard',
       title: 'CSP allows wildcard script/default-src (*)',
       detail:
         'Content-Security-Policy permits script or default sources from `*`, which largely defeats XSS mitigation and enables CSP bypass via attacker-controlled hosts.',
       severity: 'high',
-    };
+    });
   }
   if (lower.includes('unsafe-eval') && lower.includes('unsafe-inline')) {
-    return {
+    out.push({
       kind: 'unsafe-both',
       title: 'CSP allows unsafe-inline and unsafe-eval',
       detail:
         'CSP contains both `unsafe-inline` and `unsafe-eval`, permitting inline script injection and string-to-code evaluation — classic XSS bypass conditions.',
       severity: 'high',
-    };
-  }
-  if (lower.includes("'unsafe-inline'") || lower.includes('unsafe-inline')) {
-    return {
+    });
+  } else if (lower.includes("'unsafe-inline'") || lower.includes('unsafe-inline')) {
+    out.push({
       kind: 'unsafe-inline',
       title: 'CSP allows unsafe-inline scripts',
       detail:
         'CSP includes `unsafe-inline`, so reflected or stored script content in HTML can still execute. This significantly weakens XSS defenses.',
       severity: 'medium',
-    };
-  }
-  if (lower.includes("'unsafe-eval'") || lower.includes('unsafe-eval')) {
-    return {
+    });
+  } else if (lower.includes("'unsafe-eval'") || lower.includes('unsafe-eval')) {
+    out.push({
       kind: 'unsafe-eval',
       title: 'CSP allows unsafe-eval',
       detail:
         'CSP includes `unsafe-eval`, allowing `eval`/`new Function` style sinks that attackers abuse for XSS and CSP bypass gadgets.',
       severity: 'medium',
-    };
+    });
   }
-  return null;
+
+  // Nonce present alongside unsafe-inline — developers often assume nonce alone
+  // is enough; legacy browsers / mis-ordered policies still allow inline XSS.
+  if (
+    /'nonce-[^']+'/.test(lower) &&
+    (lower.includes("'unsafe-inline'") || lower.includes('unsafe-inline'))
+  ) {
+    out.push({
+      kind: 'nonce-unsafe-inline',
+      title: 'CSP mixes script nonce with unsafe-inline',
+      detail:
+        'CSP declares a script nonce while also allowing `unsafe-inline`. This combination is confusing and often indicates a policy that still permits inline XSS on some user agents or directives.',
+      severity: 'medium',
+    });
+  }
+
+  // Missing base-uri / object-src with dangerous sinks → classic CSP bypass.
+  if (opts.hasSinks) {
+    const hasBaseUri = /(?:^|;)\s*base-uri\b/.test(lower);
+    const hasObjectSrc = /(?:^|;)\s*object-src\b/.test(lower);
+    const defaultSrcNone = /(?:^|;)\s*default-src\s+[^;]*'none'/.test(lower);
+    if (!hasBaseUri || (!hasObjectSrc && !defaultSrcNone)) {
+      const missing: string[] = [];
+      if (!hasBaseUri) missing.push('base-uri');
+      if (!hasObjectSrc && !defaultSrcNone) missing.push('object-src');
+      if (missing.length) {
+        out.push({
+          kind: 'missing-base-object',
+          title: `CSP missing ${missing.join(' and ')} with dangerous sinks present`,
+          detail:
+            `HTML contains dangerous sinks and CSP omits ${missing.join(
+              ' / ',
+            )}, enabling base-tag / plugin-based CSP bypasses even when script-src looks strict.`,
+          severity: 'medium',
+        });
+      }
+    }
+  }
+
+  return out;
 }
 
 function preview(body: string): string {

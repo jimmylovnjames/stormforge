@@ -76,8 +76,37 @@ describe('exposedFilesCheck', () => {
 describe('cookiesCheck', () => {
   it('flags session cookie missing flags', () => {
     const f = cookiesCheck.run(probe({ headers: { 'set-cookie': 'sessionid=abc; Path=/' } }), ctx);
-    expect(f).toHaveLength(1);
+    expect(f.length).toBeGreaterThanOrEqual(1);
     expect(f[0].title).toContain('Secure');
+    expect(f[0].severity).toBe('medium');
+  });
+
+  it('flags SameSite=None without Secure', () => {
+    const f = cookiesCheck.run(
+      probe({ headers: { 'set-cookie': 'sid=abc; Path=/; HttpOnly; SameSite=None' } }),
+      ctx,
+    );
+    expect(f.some((x) => /SameSite=None/i.test(x.title) && /Secure/i.test(x.title))).toBe(true);
+  });
+
+  it('flags __Host- prefix violations (Domain set / missing Path=/)', () => {
+    const f = cookiesCheck.run(
+      probe({
+        headers: {
+          'set-cookie': '__Host-session=abc; Secure; HttpOnly; SameSite=Strict; Domain=x.com; Path=/admin',
+        },
+      }),
+      ctx,
+    );
+    expect(f.some((x) => /__Host-/i.test(x.title))).toBe(true);
+  });
+
+  it('flags __Secure- prefix without Secure attribute', () => {
+    const f = cookiesCheck.run(
+      probe({ headers: { 'set-cookie': '__Secure-token=abc; Path=/; HttpOnly; SameSite=Lax' } }),
+      ctx,
+    );
+    expect(f.some((x) => /__Secure-/i.test(x.title))).toBe(true);
   });
 });
 

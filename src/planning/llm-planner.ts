@@ -3,6 +3,8 @@
 // Drop-in replacement. Same exports. Defensive parsing. No invented APIs.
 
 import type { Env, Finding, ProbeResult } from '../types.js';
+import { fingerprint } from '../recon/fingerprint.js';
+import { pathsForProducts } from './tech-path-packs.js';
 
 export interface PlannerSuggestion {
   suggestedPaths: string[];
@@ -107,6 +109,10 @@ function summarizeRecon(probes: ProbeResult[]) {
   for (const p of probes) {
     const server = p.headers['server'] || p.headers['x-powered-by'];
     if (server) products.add(server);
+
+    for (const t of fingerprint(p)) {
+      products.add(t.product);
+    }
 
     if (p.headers['x-debug-token'] || p.headers['x-request-id']) {
       interestingHeaders.push('debug-header');
@@ -254,6 +260,9 @@ export function heuristicPlan(
     candidates.push('/graphql', '/api/graphql', '/openapi.json', '/swagger.json');
   }
 
+  // Fingerprint → focused Worker path packs (WordPress, Spring, OIDC, …)
+  candidates.push(...pathsForProducts(context.products ?? []));
+
   const suggested = [...new Set(candidates)].filter((c) => c.startsWith('/') && !seen.has(c)).slice(0, 30);
 
   return {
@@ -332,6 +341,21 @@ export function planPathsFromFindings(findings: Finding[]): PlannerSuggestion {
         break;
       case 'rate-limit-missing':
         paths.push('/login', '/api/v1/login', '/oauth/token', '/otp');
+        break;
+      case 'ws-saml-discovery':
+      case 'oauth-misconfig':
+        paths.push(
+          '/.well-known/openid-configuration',
+          '/.well-known/jwks.json',
+          '/oauth/authorize',
+          '/oauth/token',
+          '/oauth2/authorize',
+          '/saml/metadata',
+          '/sso/saml/metadata',
+          '/ws',
+          '/socket.io/',
+          '/cable',
+        );
         break;
       default:
         break;

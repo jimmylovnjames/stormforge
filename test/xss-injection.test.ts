@@ -157,6 +157,48 @@ describe('xssInjectionCheck', () => {
     expect(f.some((x) => x.title.includes('Unsafe client-side sinks'))).toBe(true);
   });
 
+  it('flags nonce + unsafe-inline as weak CSP', () => {
+    const f = xssInjectionCheck.run(
+      probe({
+        headers: {
+          'content-type': 'text/html',
+          'content-security-policy': "script-src 'nonce-abc123' 'unsafe-inline'",
+        },
+        body: '<html><body></body></html>',
+      }),
+      ctx,
+    );
+    expect(f.some((x) => /nonce/i.test(x.title) && /unsafe-inline/i.test(x.title))).toBe(true);
+  });
+
+  it('flags missing base-uri/object-src when dangerous sinks present', () => {
+    const f = xssInjectionCheck.run(
+      probe({
+        headers: {
+          'content-type': 'text/html',
+          'content-security-policy': "default-src 'self'; script-src 'self'",
+        },
+        body: '<html><script>el.innerHTML = location.hash</script></html>',
+      }),
+      ctx,
+    );
+    expect(f.some((x) => /base-uri|object-src/i.test(x.title))).toBe(true);
+  });
+
+  it('flags Report-Only CSP without an enforcing policy', () => {
+    const f = xssInjectionCheck.run(
+      probe({
+        headers: {
+          'content-type': 'text/html',
+          'content-security-policy-report-only': "default-src 'self'",
+        },
+        body: '<html></html>',
+      }),
+      ctx,
+    );
+    expect(f.some((x) => /report-only/i.test(x.title))).toBe(true);
+  });
+
   it('is registered in the check registry', () => {
     expect(listChecks().some((c) => c.id === 'xss-injection')).toBe(true);
   });

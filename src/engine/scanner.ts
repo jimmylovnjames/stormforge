@@ -7,7 +7,14 @@
 import type { Env, Finding, ProbeResult, ScanReport, ScanRequest } from '../types.js';
 import { HttpClient, RateLimiter } from '../recon/http-client.js';
 import { partitionByScope, hostOf } from '../scope/scope-guard.js';
-import { SENSITIVE_PATHS, API_PROBE_PATHS, AUTH_IDOR_PATHS, SECRET_LEAK_PATHS, BRUTEFORCE_PATHS } from '../recon/wordlists.js';
+import {
+  SENSITIVE_PATHS,
+  API_PROBE_PATHS,
+  AUTH_IDOR_PATHS,
+  SECRET_LEAK_PATHS,
+  BRUTEFORCE_PATHS,
+  FEDERATION_PATHS,
+} from '../recon/wordlists.js';
 import {
   buildGraphqlIntrospectionUrl,
   extractOpenApiPaths,
@@ -1118,6 +1125,7 @@ function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
     ...CACHE_SENSITIVE_PATHS,
     ...SECRET_LEAK_PATHS,
     ...SENSITIVE_PATHS,
+    ...FEDERATION_PATHS,
     ...extraPaths,
   ];
   for (const t of targets) {
