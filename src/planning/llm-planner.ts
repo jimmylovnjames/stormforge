@@ -184,12 +184,16 @@ export function summarizeFindings(findings: Finding[]): string {
 export function planPathsFromFindings(findings: Finding[]): PlannerSuggestion {
   const paths: string[] = [];
   for (const f of findings) {
+    // Concrete paths embedded in evidence (e.g. harvested OpenAPI).
+    for (const p of pathsFromEvidence(f.evidence)) paths.push(p);
+
     switch (f.checkId) {
       case 'graphql-introspection':
       case 'api-schema-exposure':
         paths.push('/graphql', '/api/graphql', '/graphiql', '/v1/graphql', '/swagger.json', '/openapi.json');
         break;
       case 'auth-access-control':
+      case 'auth-differential':
       case 'weak-jwt':
         paths.push('/api/v1/users/1', '/api/v1/users/2', '/api/v1/me', '/admin/users', '/api/v1/accounts/1', '/admin', '/dashboard');
         break;
@@ -200,9 +204,11 @@ export function planPathsFromFindings(findings: Finding[]): PlannerSuggestion {
       case 'xss-injection':
       case 'command-injection':
       case 'ssrf-open-redirect':
+      case 'ssrf-blind-canary':
       case 'sql-injection-error':
       case 'crlf-header-injection':
       case 'prototype-pollution':
+      case 'http-parameter-pollution':
         try {
           const u = new URL(f.target);
           if (u.pathname && u.pathname !== '/') paths.push(u.pathname);
@@ -231,11 +237,25 @@ export function planPathsFromFindings(findings: Finding[]): PlannerSuggestion {
         break;
     }
   }
-  const suggested = [...new Set(paths)].filter((p) => p.startsWith('/')).slice(0, 30);
+  const suggested = [...new Set(paths)].filter((p) => p.startsWith('/')).slice(0, 40);
   return {
     suggestedPaths: suggested,
     rationale: `Second-pass paths derived from ${findings.length} finding(s) across ${new Set(findings.map((f) => f.checkId)).size} check class(es)`,
     source: 'evolved',
   };
+}
+
+/** Parse `/path` tokens from evidence lines like `paths: /a, /b`. */
+function pathsFromEvidence(evidence: string | undefined): string[] {
+  if (!evidence) return [];
+  const out: string[] = [];
+  const m = evidence.match(/paths:\s*([^\n]+)/i);
+  if (m) {
+    for (const part of m[1]!.split(/[,\s]+/)) {
+      const p = part.trim();
+      if (p.startsWith('/') && p.length < 120) out.push(p.replace(/\{[^}]+\}/g, '1'));
+    }
+  }
+  return out;
 }
 

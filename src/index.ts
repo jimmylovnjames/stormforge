@@ -30,6 +30,7 @@ import { shouldAutoDraft } from './findings/prioritize.js';
 import type { Finding } from './types.js';
 import { isCanaryToken, recordCanaryHit } from './recon/canary.js';
 import { validateSession } from './recon/session.js';
+import { enqueueWorkerRescan, extractCrawlUrls } from './planning/worker-rescan.js';
 
 export { ScanOrchestrator };
 
@@ -233,6 +234,7 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
   let followUpsDispatched = 0;
   let promoted = 0;
   let bountyDrafts = 0;
+  let workerRescans = 0;
 
   if (body.result.findings?.length > 0) {
     const store = new FindingsStore(env.STORMFORGE_KV);
@@ -287,14 +289,26 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Also chain from tool stdout hosts even without structured findings (subfinder/katana).
-  if (followUpsDispatched === 0 && body.result.stdout) {
-    const synthetic = findingsFromToolStdout(task, body.result.stdout);
-    if (synthetic.length) {
-      followUpsDispatched = await dispatchFollowUpsFromFindings(env, synthetic, task.scope, {
-        scanId: task.scanId,
-        maxTasks: 5,
+  // Chain from tool stdout: executor follow-ups + Worker re-scan for crawl URLs.
+  if (body.result.stdout) {
+    if (followUpsDispatched === 0) {
+      const synthetic = findingsFromToolStdout(task, body.result.stdout);
+      if (synthetic.length) {
+        followUpsDispatched = await dispatchFollowUpsFromFindings(env, synthetic, task.scope, {
+          scanId: task.scanId,
+          maxTasks: 5,
+        });
+      }
+    }
+
+    const crawlUrls = extractCrawlUrls(task.tool, body.result.stdout, 40);
+    if (crawlUrls.length) {
+      const rescan = await enqueueWorkerRescan(env, task.scope, crawlUrls, {
+        parentScanId: task.scanId,
+        sourceTool: task.tool,
+        maxTargets: 25,
       });
+      if (rescan) workerRescans = 1;
     }
   }
 
@@ -304,6 +318,7 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
     followUpsDispatched,
     promoted,
     bountyDrafts,
+    workerRescans,
   });
 }
 

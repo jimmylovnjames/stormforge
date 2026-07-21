@@ -17,6 +17,7 @@ const BOOST: Record<string, number> = {
   'subdomain-takeover': 28,
   'auth-access-control': 25,
   'prototype-pollution': 25,
+  'http-parameter-pollution': 24,
   'crlf-header-injection': 22,
   'xss-injection': 22,
   'cache-deception': 20,

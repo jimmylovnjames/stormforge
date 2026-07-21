@@ -76,6 +76,11 @@ const BY_CHECK: Record<string, Omit<CvssEstimate, 'rating'>> = {
     score: 9.4,
     rationale: 'PP gadgets frequently escalate to RCE or auth bypass',
   },
+  'http-parameter-pollution': {
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N',
+    score: 7.5,
+    rationale: 'HPP can split auth/WAF decisions and expose privileged objects',
+  },
   'xss-injection': {
     vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N',
     score: 8.2,
@@ -143,6 +148,7 @@ const BY_CWE: Record<string, Omit<CvssEstimate, 'rating'>> = {
   'CWE-79': BY_CHECK['xss-injection']!,
   'CWE-113': BY_CHECK['crlf-header-injection']!,
   'CWE-1321': BY_CHECK['prototype-pollution']!,
+  'CWE-235': BY_CHECK['http-parameter-pollution']!,
   'CWE-639': BY_CHECK['auth-access-control']!,
 };
 

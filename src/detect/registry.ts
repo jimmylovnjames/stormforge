@@ -21,6 +21,7 @@ import { hostHeaderCheck } from './checks/host-header.js';
 import { sqlInjectionCheck } from './checks/sql-injection.js';
 import { crlfInjectionCheck } from './checks/crlf-injection.js';
 import { prototypePollutionCheck } from './checks/prototype-pollution.js';
+import { hppCheck } from './checks/hpp.js';
 import { cloudBucketCheck } from './checks/cloud-bucket.js';
 import { cacheDeceptionCheck } from './checks/cache-deception.js';
 import { subdomainTakeoverCheck } from './checks/subdomain-takeover.js';
@@ -49,6 +50,7 @@ const REGISTRY: Check[] = [
   sqlInjectionCheck,
   crlfInjectionCheck,
   prototypePollutionCheck,
+  hppCheck,
   cloudBucketCheck,
   cacheDeceptionCheck,
   subdomainTakeoverCheck,

@@ -14,6 +14,7 @@ const CANARY_CHECKS = new Set([
   'ssrf-blind-canary',
   'crlf-header-injection',
   'prototype-pollution',
+  'http-parameter-pollution',
   'weak-jwt',
   'secret-exposure',
   'cloud-bucket-exposure',

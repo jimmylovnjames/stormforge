@@ -10,6 +10,7 @@ import { partitionByScope, hostOf } from '../scope/scope-guard.js';
 import { SENSITIVE_PATHS, API_PROBE_PATHS, AUTH_IDOR_PATHS, SECRET_LEAK_PATHS, BRUTEFORCE_PATHS } from '../recon/wordlists.js';
 import {
   buildGraphqlIntrospectionUrl,
+  extractOpenApiPaths,
   parseBodySignals,
   shouldFollowUpGraphqlIntrospection,
 } from '../recon/body-parse.js';
@@ -65,6 +66,11 @@ import {
   shouldProbePrototypePollution,
 } from '../recon/pp-probes.js';
 import {
+  HPP_PATHS,
+  buildHppProbeUrls,
+  shouldProbeHpp,
+} from '../recon/hpp-probes.js';
+import {
   BUCKET_APP_PATHS,
   buildBucketProbeUrls,
   shouldProbeBucket,
@@ -80,6 +86,7 @@ import { PROBE_ORIGIN, corsBypassOriginFor } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
 import { planNextPaths, planPathsFromFindings } from '../planning/llm-planner.js';
 import { enrichFindings } from '../findings/confidence.js';
+import { harvestPathsFromProbe } from '../recon/url-harvest.js';
 
 export interface ScanProgress {
   (event: { phase: string; probed: number; total: number; findings: number }): void;
@@ -338,6 +345,40 @@ export async function runScan(
     });
   }
 
+  // 12b. HTTP Parameter Pollution canaries (duplicate query params).
+  const hppItems = collectHppFollowUps(probes);
+  const { allowed: allowedHpp } = partitionByScope(
+    hppItems.map((h) => h.url),
+    req.scope,
+  );
+  const allowedHppSet = new Set(allowedHpp);
+  const freshHpp = hppItems.filter((h) => allowedHppSet.has(h.url) && !probes.some((p) => p.url === h.url));
+  // Ensure baselines are present for sibling comparison.
+  for (const item of freshHpp) {
+    if (!probes.some((p) => p.url === item.baselineUrl)) {
+      const { allowed: baseOk } = partitionByScope([item.baselineUrl], req.scope);
+      if (baseOk.length) {
+        const bp = await client.probe(item.baselineUrl, {
+          headers: { origin: PROBE_ORIGIN, accept: 'application/json, text/html;q=0.8, */*;q=0.5' },
+        });
+        attachSignals(bp);
+        probes.push(bp);
+        probed++;
+      }
+    }
+  }
+  if (freshHpp.length) {
+    await mapWithConcurrency(freshHpp, concurrency, async (item) => {
+      const p = await client.probe(item.url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'application/json, text/html;q=0.8, */*;q=0.5' },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'hpp-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
   // 13. Cloud bucket / object-store listing probes.
   const bucketUrls = collectBucketFollowUps(probes);
   const { allowed: allowedBucket } = partitionByScope(bucketUrls, req.scope);
@@ -441,10 +482,31 @@ export async function runScan(
   for (const f of findHorizontalIdor(probes)) dedup.set(f.id, f);
 
   // 18. Autonomy second pass: findings → more paths → probe → re-check.
+  //     Also harvest OpenAPI/HTML/JS paths from bodies for concrete coverage.
   let findings = [...dedup.values()];
   const fromFindings = planPathsFromFindings(findings);
-  if (fromFindings.suggestedPaths.length) {
-    const extraUrls = buildProbeUrls(allowed, fromFindings.suggestedPaths);
+  const harvested = new Set<string>();
+  for (const p of probes) {
+    for (const path of harvestPathsFromProbe(p)) harvested.add(path);
+  }
+  // Attach harvested paths onto api-schema findings' evidence for planner reuse.
+  for (const f of findings) {
+    if (f.checkId === 'api-schema-exposure' && !/paths:\s*\//.test(f.evidence)) {
+      const match = probes.find((p) => p.url === f.target);
+      if (match) {
+        const paths = extractOpenApiPaths(match.body).slice(0, 12);
+        if (paths.length) {
+          f.evidence = `${f.evidence}\npaths: ${paths.join(', ')}`.slice(0, 4000);
+        }
+      }
+    }
+  }
+  const harvestPlan = planPathsFromFindings(findings);
+  const mergedPaths = [
+    ...new Set([...fromFindings.suggestedPaths, ...harvestPlan.suggestedPaths, ...harvested]),
+  ].slice(0, 50);
+  if (mergedPaths.length) {
+    const extraUrls = buildProbeUrls(allowed, mergedPaths);
     const { allowed: allowedExtra2 } = partitionByScope(extraUrls, req.scope);
     const fresh2 = allowedExtra2.filter((u) => !probes.some((p) => p.url === u)).slice(0, 40);
     if (fresh2.length) {
@@ -460,11 +522,38 @@ export async function runScan(
           findings: findings.length,
         });
       });
-      for (const probe of probes.slice(-fresh2.length)) {
+      // Canary refresh on newly discovered surfaces only.
+      const newProbes = probes.slice(-fresh2.length);
+      const refreshUrls = [
+        ...collectInjectionFollowUps(newProbes),
+        ...collectSqlInjectionFollowUps(newProbes),
+        ...collectSsrfRedirectFollowUps(newProbes, {
+          canaryBase: canaryBase || undefined,
+        }).map((x) => x.url),
+        ...collectHppFollowUps(newProbes).map((x) => x.url),
+      ];
+      const { allowed: allowedRefresh } = partitionByScope(refreshUrls, req.scope);
+      const freshRefresh = allowedRefresh
+        .filter((u) => !probes.some((p) => p.url === u))
+        .slice(0, 20);
+      if (freshRefresh.length) {
+        await mapWithConcurrency(freshRefresh, concurrency, async (url) => {
+          const p = await client.probe(url, {
+            headers: { origin: PROBE_ORIGIN, accept: 'text/html, application/json;q=0.9, */*;q=0.5' },
+            redirect: false,
+          });
+          attachSignals(p);
+          probes.push(p);
+          probed++;
+          onProgress?.({ phase: 'canary-refresh', probed, total: probes.length, findings: findings.length });
+        });
+      }
+      for (const probe of probes.slice(-(fresh2.length + freshRefresh.length))) {
         for (const f of runChecks(probe, { scope: req.scope, siblings: probes })) {
           dedup.set(f.id, f);
         }
       }
+      for (const f of findHorizontalIdor(probes)) dedup.set(f.id, f);
       findings = [...dedup.values()];
     }
   }
@@ -756,6 +845,39 @@ export function collectPrototypePollutionFollowUps(probes: ProbeResult[]): strin
   return [...out];
 }
 
+export interface HppFollowUp {
+  url: string;
+  baselineUrl: string;
+  kind: string;
+}
+
+export function collectHppFollowUps(probes: ProbeResult[]): HppFollowUp[] {
+  const out: HppFollowUp[] = [];
+  const seen = new Set<string>();
+  let budget = 14;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeHpp(p)) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      // Keep existing simple query if present for realistic baselines.
+      if ([...u.searchParams.keys()].length > 3) u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    for (const item of buildHppProbeUrls(cleanBase)) {
+      if (budget <= 0) break;
+      if (seen.has(item.url)) continue;
+      seen.add(item.url);
+      out.push(item);
+      budget--;
+    }
+  }
+  return out;
+}
+
 export function collectBucketFollowUps(probes: ProbeResult[]): string[] {
   const out = new Set<string>();
   let budget = 12;
@@ -902,6 +1024,7 @@ function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
     ...SQL_PATHS,
     ...CRLF_PATHS,
     ...PP_PATHS,
+    ...HPP_PATHS,
     ...BUCKET_APP_PATHS,
     ...CACHE_SENSITIVE_PATHS,
     ...SECRET_LEAK_PATHS,

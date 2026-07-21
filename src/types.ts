@@ -155,6 +155,10 @@ export interface ScanRequest {
    * Injected from the incoming request origin when omitted.
    */
   canaryBaseUrl?: string;
+  /** When set, this scan was spawned from an executor crawl (katana/ffuf). */
+  parentScanId?: string;
+  /** Tool that discovered the re-scan targets. */
+  sourceTool?: string;
 }
 
 export interface ScanReport {

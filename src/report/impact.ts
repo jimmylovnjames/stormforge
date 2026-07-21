@@ -63,6 +63,9 @@ export function impactForFinding(f: Finding): string {
   if (f.cwe === 'CWE-1321') {
     return 'Prototype pollution can escalate into authentication bypass, remote code execution, or denial of service through polluted object gadgets.';
   }
+  if (f.cwe === 'CWE-235') {
+    return 'HTTP Parameter Pollution lets attackers supply duplicate parameters that backends interpret inconsistently — often bypassing WAFs, authorization checks, or input validation.';
+  }
   if (f.cwe === 'CWE-915') {
     return 'Mass assignment lets attackers set privileged model fields (roles, flags) and escalate access without a direct authorization flaw.';
   }

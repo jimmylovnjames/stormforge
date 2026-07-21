@@ -156,6 +156,32 @@ function detectOpenApiSignals(body: string): { pathCount: number; version?: stri
   return { pathCount, version };
 }
 
+/**
+ * Extract concrete OpenAPI/Swagger path templates from a schema body.
+ * Returns pathnames (may include `{id}` placeholders).
+ */
+export function extractOpenApiPaths(body: string): string[] {
+  if (!body) return [];
+  const signals = detectOpenApiSignals(body);
+  if (!signals.version) return [];
+  const paths = new Set<string>();
+  const jsonKeys = body.matchAll(/"(\/[A-Za-z0-9_{}\-/.]+)"\s*:/g);
+  for (const m of jsonKeys) {
+    // Skip known non-path OpenAPI keys mistaken as paths.
+    const p = m[1]!;
+    if (p === '/paths' || p.length < 2) continue;
+    paths.add(p);
+    if (paths.size >= 80) break;
+  }
+  // YAML-ish: `  /users:` under paths
+  const yamlKeys = body.matchAll(/^[ \t]+(\/[A-Za-z0-9_{}\-/.]+):\s*$/gm);
+  for (const m of yamlKeys) {
+    paths.add(m[1]!);
+    if (paths.size >= 80) break;
+  }
+  return [...paths];
+}
+
 /** Pathname looks like a GraphQL or explorer route. */
 export function pathLooksLikeGraphql(url: string): boolean {
   try {
