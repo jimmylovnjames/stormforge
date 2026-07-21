@@ -64,7 +64,7 @@ import {
 } from '../recon/cache-deception-probes.js';
 import { DOH_ENDPOINT, parseDohResponse } from '../recon/takeover.js';
 import { runChecks } from '../detect/registry.js';
-import { PROBE_ORIGIN } from '../detect/checks/cors.js';
+import { PROBE_ORIGIN, corsBypassOriginFor } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
 import { planNextPaths, planPathsFromFindings } from '../planning/llm-planner.js';
 
@@ -327,7 +327,21 @@ export async function runScan(
     onProgress?.({ phase: 'takeover-dns', probed, total: probes.length, findings: 0 });
   }
 
-  // 16. Run detection checks over all probes.
+  // 16. CORS subdomain-trust bypass Origins (ends-with registrable domain).
+  const corsTargets = collectCorsBypassFollowUps(probes);
+  if (corsTargets.length) {
+    await mapWithConcurrency(corsTargets, concurrency, async (item) => {
+      const p = await client.probe(item.url, {
+        headers: { origin: item.origin, accept: 'application/json, text/html;q=0.8, */*;q=0.5' },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'cors-bypass-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 17. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
     for (const f of runChecks(probe, { scope: req.scope, siblings: probes })) {
@@ -335,7 +349,7 @@ export async function runScan(
     }
   }
 
-  // 17. Autonomy second pass: findings → more paths → probe → re-check.
+  // 18. Autonomy second pass: findings → more paths → probe → re-check.
   let findings = [...dedup.values()];
   const fromFindings = planPathsFromFindings(findings);
   if (fromFindings.suggestedPaths.length) {
@@ -366,7 +380,7 @@ export async function runScan(
 
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 18. Assemble report.
+  // 19. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -732,6 +746,36 @@ export async function collectTakeoverDnsProbes(
       });
     }
   });
+  return out;
+}
+
+/** Re-probe a few live API/HTML origins with subdomain-trust bypass Origin. */
+export function collectCorsBypassFollowUps(
+  probes: ProbeResult[],
+): Array<{ url: string; origin: string }> {
+  const out: Array<{ url: string; origin: string }> = [];
+  const seen = new Set<string>();
+  let budget = 10;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (p.error || p.status === 0) continue;
+    if (p.status < 200 || p.status >= 500) continue;
+    const origin = corsBypassOriginFor(p.url);
+    if (!origin) continue;
+    let clean = p.url;
+    try {
+      const u = new URL(p.finalUrl ?? p.url);
+      u.search = '';
+      clean = u.toString();
+    } catch {
+      /* keep */
+    }
+    const key = `${clean}|${origin}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ url: clean, origin });
+    budget--;
+  }
   return out;
 }
 

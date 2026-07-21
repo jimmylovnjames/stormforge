@@ -23,6 +23,7 @@ import { prototypePollutionCheck } from './checks/prototype-pollution.js';
 import { cloudBucketCheck } from './checks/cloud-bucket.js';
 import { cacheDeceptionCheck } from './checks/cache-deception.js';
 import { subdomainTakeoverCheck } from './checks/subdomain-takeover.js';
+import { debugDisclosureCheck } from './checks/debug-disclosure.js';
 import { secretsExposureCheck } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -48,6 +49,7 @@ const REGISTRY: Check[] = [
   cloudBucketCheck,
   cacheDeceptionCheck,
   subdomainTakeoverCheck,
+  debugDisclosureCheck,
 ];
 
 export function registerCheck(check: Check): void {
