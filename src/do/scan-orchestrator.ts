@@ -5,6 +5,7 @@
 import type { Env, ScanReport, ScanRequest } from '../types.js';
 import { runScan } from '../engine/scanner.js';
 import { FindingsStore } from '../findings/store.js';
+import { dispatchHybridFollowUp, shouldHybridDispatch } from '../tasks/hybrid.js';
 
 interface ScanState {
   status: 'idle' | 'running' | 'done' | 'error';
@@ -15,6 +16,7 @@ interface ScanState {
   report?: ScanReport;
   error?: string;
   startedAt?: string;
+  executorTasksEnqueued?: number;
 }
 
 export class ScanOrchestrator {
@@ -33,8 +35,14 @@ export class ScanOrchestrator {
         return json({ error: 'A scan is already running in this orchestrator' }, 409);
       }
       const req = (await request.json()) as ScanRequest;
-      // Kick off asynchronously; return immediately so the client can poll.
-      this.state = { status: 'running', phase: 'starting', probed: 0, total: 0, findings: 0, startedAt: new Date().toISOString() };
+      this.state = {
+        status: 'running',
+        phase: 'starting',
+        probed: 0,
+        total: 0,
+        findings: 0,
+        startedAt: new Date().toISOString(),
+      };
       this.ctx.waitUntil(this.execute(req));
       return json({ status: 'running' });
     }
@@ -49,11 +57,30 @@ export class ScanOrchestrator {
   private async execute(req: ScanRequest): Promise<void> {
     try {
       const report = await runScan(req, this.env, (ev) => {
-        this.state = { ...this.state, phase: ev.phase, probed: ev.probed, total: ev.total, findings: ev.findings };
+        this.state = {
+          ...this.state,
+          phase: ev.phase,
+          probed: ev.probed,
+          total: ev.total,
+          findings: ev.findings,
+        };
       });
-      // Persist findings for cross-scan dedupe + reporting.
       const store = new FindingsStore(this.env.STORMFORGE_KV);
-      await store.upsertMany(req.scope.program, report.findings);
+      await store.upsertMany(req.scope.program, report.findings, { keepRecon: true });
+
+      let executorTasksEnqueued = 0;
+      if (shouldHybridDispatch(this.env, req.scope)) {
+        this.state = { ...this.state, phase: 'hybrid-dispatch' };
+        const hybrid = await dispatchHybridFollowUp(this.env, {
+          scanId: report.scanId,
+          scope: req.scope,
+          targets: req.targets,
+          findings: report.findings,
+          followUpDepth: 0,
+        });
+        executorTasksEnqueued = hybrid.enqueued;
+      }
+
       this.state = {
         status: 'done',
         phase: 'complete',
@@ -62,6 +89,7 @@ export class ScanOrchestrator {
         findings: report.findings.length,
         report,
         startedAt: this.state.startedAt,
+        executorTasksEnqueued,
       };
     } catch (e) {
       this.state = { ...this.state, status: 'error', error: (e as Error).message };

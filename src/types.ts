@@ -159,6 +159,10 @@ export interface ToolTask {
   createdAt: string;
   /** Populated by executor on completion. */
   result?: ToolTaskResult;
+  /** When this running lease expires (ISO); used for reclaim. */
+  leaseExpiresAt?: string;
+  /** How many evolved follow-up hops produced this task (cap re-dispatch). */
+  followUpDepth?: number;
 }
 
 export interface ToolTaskResult {

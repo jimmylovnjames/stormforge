@@ -13,7 +13,8 @@ import { listChecks } from './detect/registry.js';
 import { DASHBOARD_HTML } from './dashboard-html.js';
 import { planAttackSurface } from './planning/vuln-planner.js';
 import { auditLog, listAuditEvents } from './audit/log.js';
-import { inferQualityContext } from './findings/quality.js';
+import { enqueueTasks, leaseBatch } from './tasks/queue.js';
+import { processTaskCompletion } from './tasks/complete-followup.js';
 
 export { ScanOrchestrator };
 
@@ -156,12 +157,10 @@ async function handleDispatch(request: Request, env: Env): Promise<Response> {
     status: 'pending',
     timeoutSec: body.timeoutSec || 300,
     createdAt: new Date().toISOString(),
+    followUpDepth: 0,
   };
 
-  await env.STORMFORGE_KV.put(`task:${task.id}`, JSON.stringify(task));
-  const queue = await getQueue(env);
-  queue.push(task.id);
-  await env.STORMFORGE_KV.put('task_queue:pending', JSON.stringify(queue));
+  await enqueueTasks(env, [task]);
 
   await auditLog(env, {
     action: 'task.dispatch',
@@ -180,37 +179,7 @@ async function handlePoll(request: Request, env: Env): Promise<Response> {
     return json({ error: 'Unauthorized' }, 401);
   }
 
-  const queue = await getQueue(env);
-  if (queue.length === 0) {
-    return json({ tasks: [] });
-  }
-
-  const batch = queue.splice(0, 5);
-  await env.STORMFORGE_KV.put('task_queue:pending', JSON.stringify(queue));
-
-  const tasks: ToolTask[] = [];
-  for (const id of batch) {
-    const raw = await env.STORMFORGE_KV.get(`task:${id}`);
-    if (raw) {
-      const task = JSON.parse(raw) as ToolTask;
-      // Re-validate scope at poll time
-      if (!task.scope?.authorized || !evaluateScope(task.target, task.scope).allowed) {
-        task.status = 'error';
-        await env.STORMFORGE_KV.put(`task:${id}`, JSON.stringify(task));
-        await auditLog(env, {
-          action: 'task.refused',
-          detail: 'Task failed scope re-check at poll',
-          target: task.target,
-          program: task.scope?.program,
-          meta: { taskId: id },
-        });
-        continue;
-      }
-      task.status = 'running';
-      await env.STORMFORGE_KV.put(`task:${id}`, JSON.stringify(task));
-      tasks.push(task);
-    }
-  }
+  const tasks = await leaseBatch(env, { limit: 5 });
 
   await auditLog(env, {
     action: 'task.poll',
@@ -228,42 +197,15 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
   }
 
   const body = (await request.json()) as { taskId: string; result: ToolTaskResult };
-  const raw = await env.STORMFORGE_KV.get(`task:${body.taskId}`);
-  if (!raw) return json({ error: 'Task not found' }, 404);
+  const exists = await env.STORMFORGE_KV.get(`task:${body.taskId}`);
+  if (!exists) return json({ error: 'Task not found' }, 404);
 
-  const task = JSON.parse(raw) as ToolTask;
-  task.status = body.result.timedOut
-    ? 'timeout'
-    : body.result.exitCode === 0
-      ? 'done'
-      : 'error';
-  task.result = body.result;
-  await env.STORMFORGE_KV.put(`task:${body.taskId}`, JSON.stringify(task));
-
-  let findingsCount = 0;
-  if (body.result.findings?.length > 0) {
-    const store = new FindingsStore(env.STORMFORGE_KV);
-    const ctx = inferQualityContext(
-      body.result.findings.map(() => ({} as Record<string, string>)),
-    );
-    const stats = await store.upsertMany(task.scope.program, body.result.findings, { ctx });
-    findingsCount = stats.added + stats.updated;
-  }
-
-  await auditLog(env, {
-    action: 'task.complete',
-    detail: `${task.tool} ${task.status} — ${findingsCount} findings stored`,
-    target: task.target,
-    program: task.scope.program,
-    meta: {
-      taskId: body.taskId,
-      exitCode: body.result.exitCode,
-      timedOut: !!body.result.timedOut,
-      command: body.result.command?.slice(0, 200),
-    },
+  const out = await processTaskCompletion(env, body);
+  return json({
+    status: out.status,
+    findingsCount: out.findingsStored,
+    followUpsEnqueued: out.followUpsEnqueued,
   });
-
-  return json({ status: task.status, findingsCount });
 }
 
 async function handleTaskStatus(scanId: string, env: Env): Promise<Response> {
@@ -328,10 +270,10 @@ async function handlePlanAttack(request: Request, env: Env): Promise<Response> {
     discoveredAt: new Date().toISOString(),
   }));
 
-  const plan = await planAttackSurface(allowed, body.scope, env, {
-    findings: priorFindings,
-  });
+  const scanId = crypto.randomUUID();
 
+  // Explicit plan-attack always dispatches (operator-initiated), independent of SCAN_MODE.
+  const plan = await planAttackSurface(allowed, body.scope, env, { findings: priorFindings });
   if (!plan.tasks.length) {
     await auditLog(env, {
       action: 'plan.attack',
@@ -341,42 +283,34 @@ async function handlePlanAttack(request: Request, env: Env): Promise<Response> {
     return json({ error: 'No tasks planned', rationale: plan.rationale }, 400);
   }
 
-  const taskIds: string[] = [];
-  const scanId = crypto.randomUUID();
-  for (const planned of plan.tasks) {
-    const task: ToolTask = {
-      id: crypto.randomUUID(),
-      scanId,
-      tool: planned.tool,
-      target: planned.target,
-      args: planned.args,
-      scope: body.scope,
-      status: 'pending',
-      timeoutSec: planned.timeoutSec || 300,
-      createdAt: new Date().toISOString(),
-    };
-    await env.STORMFORGE_KV.put(`task:${task.id}`, JSON.stringify(task));
-    taskIds.push(task.id);
-  }
-
-  const queue = await getQueue(env);
-  queue.push(...taskIds);
-  await env.STORMFORGE_KV.put('task_queue:pending', JSON.stringify(queue));
+  const tasks: ToolTask[] = plan.tasks.map((planned) => ({
+    id: crypto.randomUUID(),
+    scanId,
+    tool: planned.tool,
+    target: planned.target,
+    args: planned.args,
+    scope: body.scope,
+    status: 'pending' as const,
+    timeoutSec: planned.timeoutSec || 300,
+    createdAt: new Date().toISOString(),
+    followUpDepth: 0,
+  }));
+  await enqueueTasks(env, tasks);
 
   await auditLog(env, {
     action: 'plan.attack',
-    detail: `Dispatched ${taskIds.length} tasks (${plan.source})`,
+    detail: `Dispatched ${tasks.length} tasks (${plan.source})`,
     program: body.scope.program,
-    meta: { scanId, source: plan.source, count: taskIds.length },
+    meta: { scanId, source: plan.source, count: tasks.length },
   });
 
   return json({
     scanId,
-    tasksDispatched: taskIds.length,
+    tasksDispatched: tasks.length,
     plan: plan.rationale,
     source: plan.source,
     tasks: plan.tasks.map((t, i) => ({
-      id: taskIds[i],
+      id: tasks[i]!.id,
       tool: t.tool,
       target: t.target,
       rationale: t.rationale,
@@ -453,11 +387,6 @@ async function handleReport(program: string, env: Env): Promise<Response> {
   };
   const markdown = draftDisclosure(findings, scope);
   return new Response(markdown, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
-}
-
-async function getQueue(env: Env): Promise<string[]> {
-  const raw = await env.STORMFORGE_KV.get('task_queue:pending');
-  return raw ? JSON.parse(raw) : [];
 }
 
 function validateScanRequest(req: ScanRequest): string | null {
