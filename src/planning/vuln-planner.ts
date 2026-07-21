@@ -251,7 +251,13 @@ export function planFollowUpTasks(
     tasks.push(t);
   };
 
-  for (const f of findings) {
+  const ordered = [...findings].sort((a, b) => {
+    const rank = (s: string) =>
+      ({ info: 0, low: 1, medium: 2, high: 3, critical: 4 } as Record<string, number>)[s] ?? 0;
+    return rank(b.severity) - rank(a.severity);
+  });
+
+  for (const f of ordered) {
     if (tasks.length >= maxTasks) break;
     const target = f.target;
     if (!target) continue;
