@@ -102,11 +102,12 @@ describe('versionCveCheck', () => {
 });
 
 describe('scanSecrets', () => {
-  it('detects an AWS key and redacts it', () => {
+  it('detects an AWS key as critical and redacts it', () => {
     const f = scanSecrets(probe({ body: 'const k = "AKIAIOSFODNN7EXAMPLE";' }));
     expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('critical');
     expect(f[0].evidence).not.toContain('AKIAIOSFODNN7EXAMPLE');
-    expect(f[0].needsManualReview).toBe(true);
+    expect(f[0].needsManualReview).toBe(false);
   });
 });
 

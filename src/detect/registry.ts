@@ -11,7 +11,7 @@ import { apiSchemaExposureCheck } from './checks/api-schema-exposure.js';
 import { graphqlIntrospectionCheck } from './checks/graphql-introspection.js';
 import { authAccessCheck } from './checks/auth-access.js';
 import { weakJwtCheck } from './checks/weak-jwt.js';
-import { scanSecrets } from '../recon/secrets.js';
+import { secretsExposureCheck } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
   securityHeadersCheck,
@@ -23,6 +23,7 @@ const REGISTRY: Check[] = [
   graphqlIntrospectionCheck,
   authAccessCheck,
   weakJwtCheck,
+  secretsExposureCheck,
 ];
 
 export function registerCheck(check: Check): void {
@@ -36,7 +37,7 @@ export function listChecks(): Check[] {
   return [...REGISTRY];
 }
 
-/** Run all registered checks (plus the secret scanner) against one probe. */
+/** Run all registered checks against one probe. */
 export function runChecks(probe: ProbeResult, ctx: CheckContext): Finding[] {
   const findings: Finding[] = [];
   for (const check of REGISTRY) {
@@ -47,6 +48,5 @@ export function runChecks(probe: ProbeResult, ctx: CheckContext): Finding[] {
       console.error(`check ${check.id} threw:`, e);
     }
   }
-  findings.push(...scanSecrets(probe));
   return findings;
 }

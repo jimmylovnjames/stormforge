@@ -3,10 +3,24 @@
 // Findings are keyed by their stable id, so re-scanning an asset updates rather
 // than duplicates. Also maintains a per-program index for report assembly.
 
-import type { Finding } from '../types.js';
+import type { Finding, Severity } from '../types.js';
+import { SEVERITY_ORDER } from '../types.js';
+import { compareSeverityDesc } from './severity.js';
 
 const FINDING_PREFIX = 'finding:';
 const INDEX_PREFIX = 'index:';
+
+export interface FindingsQuery {
+  checkId?: string;
+  /** Minimum severity inclusive (e.g. 'high' → high + critical). */
+  minSeverity?: Severity;
+}
+
+export interface SecretFindingsSummary {
+  total: number;
+  bySeverity: Record<Severity, number>;
+  checkIds: string[];
+}
 
 export class FindingsStore {
   constructor(private readonly kv: KVNamespace) {}
@@ -25,7 +39,10 @@ export class FindingsStore {
     let added = 0;
     let updated = 0;
 
-    for (const f of findings) {
+    // Persist higher-severity first so interrupted writes still keep critical secrets.
+    const ordered = [...findings].sort((a, b) => compareSeverityDesc(a.severity, b.severity));
+
+    for (const f of ordered) {
       const existed = index.has(f.id);
       await this.kv.put(this.findingKey(program, f.id), JSON.stringify(f));
       if (existed) updated++;
@@ -50,11 +67,43 @@ export class FindingsStore {
       const raw = await this.kv.get(this.findingKey(program, id));
       if (raw) out.push(JSON.parse(raw) as Finding);
     }
-    return out;
+    return out.sort((a, b) => compareSeverityDesc(a.severity, b.severity));
   }
 
   async get(program: string, id: string): Promise<Finding | null> {
     const raw = await this.kv.get(this.findingKey(program, id));
     return raw ? (JSON.parse(raw) as Finding) : null;
   }
+
+  /** Filter stored findings by check id and/or minimum severity. */
+  async query(program: string, q: FindingsQuery = {}): Promise<Finding[]> {
+    const all = await this.getAll(program);
+    return all.filter((f) => {
+      if (q.checkId && f.checkId !== q.checkId) return false;
+      if (q.minSeverity && SEVERITY_ORDER[f.severity] < SEVERITY_ORDER[q.minSeverity]) return false;
+      return true;
+    });
+  }
+
+  async getSecrets(program: string): Promise<Finding[]> {
+    return this.query(program, { checkId: 'secret-exposure' });
+  }
+}
+
+/** Summarize secret-exposure findings for report headers / API payloads. */
+export function summarizeSecretFindings(findings: Finding[]): SecretFindingsSummary {
+  const secrets = findings.filter((f) => f.checkId === 'secret-exposure');
+  const bySeverity: Record<Severity, number> = {
+    info: 0,
+    low: 0,
+    medium: 0,
+    high: 0,
+    critical: 0,
+  };
+  for (const f of secrets) bySeverity[f.severity]++;
+  return {
+    total: secrets.length,
+    bySeverity,
+    checkIds: ['secret-exposure'],
+  };
 }

@@ -56,12 +56,18 @@ export function draftFinding(finding: Finding, scope: Scope): string {
 /** A combined disclosure document for a whole program. */
 export function draftDisclosure(findings: Finding[], scope: Scope): string {
   const sorted = [...findings].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+  const secrets = sorted.filter((f) => f.checkId === 'secret-exposure');
   const sections = sorted.map((f) => draftFinding(f, scope));
+  const secretLine =
+    secrets.length > 0
+      ? `Secret exposures: ${secrets.length} (${secrets.filter((s) => s.severity === 'critical').length} critical, ${secrets.filter((s) => s.severity === 'high').length} high) — rotate before broad disclosure.`
+      : '';
   const header = [
     `# Security Findings — ${scope.program}`,
     '',
     `Platform: ${platformLabel(scope.platform)}`,
     `Total findings: ${findings.length}`,
+    secretLine,
     scope.notes ? `Scope reference: ${scope.notes}` : '',
     '',
     'All testing was non-destructive and limited to the authorized scope.',
@@ -75,7 +81,7 @@ export function draftDisclosure(findings: Finding[], scope: Scope): string {
 }
 
 function impactStatement(f: Finding): string {
-  // CWE-specific impact for access-control / JWT findings.
+  // CWE-specific impact for access-control / JWT / secret findings.
   if (f.cwe === 'CWE-639') {
     return 'Broken object-level authorization (IDOR) can expose or manipulate other users’ objects by changing predictable identifiers — often leading to bulk personal data disclosure.';
   }
@@ -84,6 +90,12 @@ function impactStatement(f: Finding): string {
   }
   if (f.cwe === 'CWE-347') {
     return 'Acceptance or issuance of weak JWTs (alg=none / empty signature) can allow forged identity claims and full authentication bypass.';
+  }
+  if (f.cwe === 'CWE-798') {
+    return 'Hard-coded or publicly served credentials can be extracted by anyone who can fetch the asset, enabling cloud takeover, data-store access, or abuse of third-party APIs until the secret is rotated.';
+  }
+  if (f.cwe === 'CWE-312') {
+    return 'Cleartext credentials (connection strings, embedded basic-auth URLs) in HTTP responses expose infrastructure secrets and often unlock direct database or message-bus access.';
   }
 
   switch (f.severity) {

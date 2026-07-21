@@ -10,10 +10,10 @@
 // a remote Node.js executor that polls /api/tasks/poll and submits results
 // back via /api/tasks/complete.
 
-import type { Env, ScanRequest, Scope, ToolTask, ToolTaskResult, ToolName } from './types.js';
+import type { Env, ScanRequest, Scope, ToolTask, ToolTaskResult, ToolName, Severity } from './types.js';
 import { ScanOrchestrator } from './do/scan-orchestrator.js';
 import { partitionByScope, assertInScope } from './scope/scope-guard.js';
-import { FindingsStore } from './findings/store.js';
+import { FindingsStore, summarizeSecretFindings } from './findings/store.js';
 import { draftDisclosure } from './report/drafter.js';
 import { listChecks } from './detect/registry.js';
 import { DASHBOARD_HTML } from './dashboard-html.js';
@@ -45,8 +45,15 @@ export default {
       const findingsMatch = pathname.match(/^\/api\/findings\/([^/]+)$/);
       if (request.method === 'GET' && findingsMatch) {
         const store = new FindingsStore(env.STORMFORGE_KV);
-        const findings = await store.getAll(decodeURIComponent(findingsMatch[1]));
-        return json({ findings });
+        const program = decodeURIComponent(findingsMatch[1]);
+        const checkId = url.searchParams.get('checkId') ?? undefined;
+        const minRaw = url.searchParams.get('minSeverity');
+        const minSeverity = isSeverity(minRaw) ? minRaw : undefined;
+        const findings =
+          checkId || minSeverity
+            ? await store.query(program, { checkId, minSeverity })
+            : await store.getAll(program);
+        return json({ findings, secrets: summarizeSecretFindings(findings) });
       }
 
       const reportMatch = pathname.match(/^\/api\/report\/([^/]+)$/);
@@ -330,6 +337,10 @@ function validateScanRequest(req: ScanRequest): string | null {
   if (!Array.isArray(req.targets) || req.targets.length === 0) return 'targets must be a non-empty array';
   if (req.targets.length > 50) return 'Too many seed targets (max 50). Split into multiple scans.';
   return null;
+}
+
+function isSeverity(v: string | null): v is Severity {
+  return v === 'info' || v === 'low' || v === 'medium' || v === 'high' || v === 'critical';
 }
 
 function json(data: unknown, status = 200): Response {
