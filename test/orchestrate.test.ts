@@ -44,8 +44,20 @@ describe('parseOrchestrateMessage', () => {
     expect(parseOrchestrateMessage('status scan-abc').scanId).toBe('scan-abc');
     expect(parseOrchestrateMessage('findings acme-h1').intent).toBe('findings');
     expect(parseOrchestrateMessage('findings acme-h1').program).toBe('acme-h1');
+    expect(parseOrchestrateMessage('show findings acme-h1').program).toBe('acme-h1');
     expect(parseOrchestrateMessage('report acme-h1').intent).toBe('report');
     expect(parseOrchestrateMessage('audit').intent).toBe('audit');
+  });
+
+  it('validates platform and ignores unknown values', () => {
+    const ok = parseOrchestrateMessage(
+      'plan https://t.example authorized program=p platform=hackerone inScope=t.example',
+    );
+    expect(ok.platform).toBe('hackerone');
+    const bad = parseOrchestrateMessage(
+      'plan https://t.example authorized program=p platform=not-a-platform inScope=t.example',
+    );
+    expect(bad.platform).toBe('generic');
   });
 
   it('parses dispatch tool', () => {

@@ -48,6 +48,8 @@ const TOOLS = new Set<ToolNameLite>([
   'gobuster',
 ]);
 
+const PLATFORMS = new Set(['hackerone', 'bugcrowd', 'immunefi', 'intigriti', 'generic']);
+
 /**
  * Parse a short operator message into a structured orchestrate intent.
  * Requires explicit `authorized` / `authorized=true` for mutating actions.
@@ -62,11 +64,14 @@ export function parseOrchestrateMessage(raw: string): ParsedCommand {
 
   const authorized = /\bauthorized(=true)?\b/i.test(message) && !/\bauthorized=false\b/i.test(message);
   const program = kv(message, 'program') || undefined;
-  const platform = (kv(message, 'platform') as ParsedCommand['platform']) || 'generic';
+  const platformRaw = (kv(message, 'platform') || '').toLowerCase();
+  const platform: ParsedCommand['platform'] = PLATFORMS.has(platformRaw)
+    ? (platformRaw as ParsedCommand['platform'])
+    : 'generic';
   const scanId =
     kv(message, 'scanId') ||
     kv(message, 'scan') ||
-    message.match(/\b(?:status|tasks)\s+([a-z0-9-]{6,})\b/i)?.[1];
+    message.match(/\b(?:status|tasks)\s+(?:for\s+)?([a-z0-9-]{6,})\b/i)?.[1];
 
   const urls = extractUrls(message);
   const hosts = extractBareHosts(message);
@@ -85,14 +90,14 @@ export function parseOrchestrateMessage(raw: string): ParsedCommand {
 
   // findings / report
   if (/^\s*findings\b/i.test(message) || /\bshow findings\b/i.test(lower)) {
-    const prog = program || message.split(/\s+/)[1];
+    const prog = program || extractNamedArg(message, 'findings');
     if (!prog || /authorized|=/.test(prog)) {
       return { intent: 'findings', message, authorized, error: 'Usage: findings <program>' };
     }
     return { intent: 'findings', message, authorized, program: prog };
   }
-  if (/^\s*report\b/i.test(message)) {
-    const prog = program || message.split(/\s+/)[1];
+  if (/^\s*report\b/i.test(message) || /\bshow report\b/i.test(lower)) {
+    const prog = program || extractNamedArg(message, 'report');
     if (!prog || /authorized|=/.test(prog)) {
       return { intent: 'report', message, authorized, error: 'Usage: report <program>' };
     }
@@ -226,6 +231,9 @@ Rules:
 - NEVER target hosts outside the user's stated inScope.
 - Prefer short commands. After each action, summarize scanId / tasks / next step.
 - For findings, ask for program id then call findings/report.
+- Loop: plan/scan → remember scanId → tasks <scanId> (executor progress) → status <scanId> (passive DO) → findings <program>.
+- status = passive Durable Object progress. tasks = remote executor queue for the same scanId (hybrid/plan/dispatch).
+- Executor must be polling /api/tasks/poll or remote work stays pending.
 
 Command cheat-sheet:
 - help
@@ -250,18 +258,28 @@ export function helpText(baseUrl?: string): string {
     '  plan https://target authorized program=lab inScope=target.com',
     '  scan https://api.target.com *.target.com authorized program=lab',
     '  dispatch httpx https://target authorized program=lab inScope=target.com',
-    '  status <scanId>',
-    '  tasks <scanId>',
+    '  status <scanId>   ← passive scan DO',
+    '  tasks <scanId>    ← executor queue (same scanId)',
     '  findings <program>',
     '  report <program>',
     '  audit',
     '',
     'Mutating commands REQUIRE the word "authorized".',
+    'Hybrid tip: after scan/plan, run tasks <scanId> while the executor polls.',
     base ? `Orchestrate API: POST ${base}/api/orchestrate` : '',
     base ? `Mobile UI: ${base}/m` : '',
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+function extractNamedArg(message: string, kind: 'findings' | 'report'): string | undefined {
+  const re = new RegExp(
+    `\\b(?:show\\s+)?${kind}(?:\\s+for)?\\s+([a-z0-9][a-z0-9._-]{1,63})\\b`,
+    'i',
+  );
+  const m = message.match(re);
+  return m?.[1];
 }
 
 function kv(message: string, key: string): string | null {

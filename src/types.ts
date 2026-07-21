@@ -114,6 +114,11 @@ export interface ScanRequest {
   targets: string[];
   /** Extra paths to probe on each target host, beyond the default wordlist. */
   extraPaths?: string[];
+  /**
+   * When set (API/orchestrate DO name), the report and hybrid executor tasks
+   * share this id so `status` / `tasks` stay on one scanId.
+   */
+  scanId?: string;
 }
 
 export interface ScanReport {

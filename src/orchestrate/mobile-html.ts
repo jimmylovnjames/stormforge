@@ -56,6 +56,13 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     font-size: 0.88rem;
     line-height: 1.35;
   }
+  #session {
+    margin-top: 0.55rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--accent);
+    min-height: 1em;
+  }
   #log {
     overflow-y: auto;
     padding: 1rem 1.15rem 1.25rem;
@@ -101,11 +108,16 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     display: flex;
     gap: 0.5rem;
     margin-bottom: 0.55rem;
+    align-items: center;
   }
   .secret-row input {
     flex: 1;
     font-family: var(--font-mono);
     font-size: 0.78rem;
+  }
+  .secret-row.bad input {
+    border-color: var(--danger);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 45%, transparent);
   }
   .composer {
     display: flex;
@@ -155,26 +167,36 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     font-size: 0.72rem;
     padding: 0.35rem 0.55rem;
   }
+  .hints button.primary {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+  }
 </style>
 </head>
 <body>
   <header>
     <h1>StormForge</h1>
     <p>Mobile orchestrator for Grok — authorized recon only. Paste the same commands you would send from the Grok app.</p>
+    <div id="session"></div>
   </header>
   <main id="log" aria-live="polite"></main>
   <footer>
-    <div class="secret-row">
-      <input id="secret" type="password" placeholder="x-executor-secret" autocomplete="off" spellcheck="false"/>
+    <div class="secret-row" id="secretRow">
+      <input id="secret" type="password" placeholder="Paste EXECUTOR_SECRET (x-executor-secret)" autocomplete="off" spellcheck="false"/>
     </div>
     <div class="composer">
       <textarea id="msg" rows="2" placeholder="scan https://api.example *.example authorized program=lab"></textarea>
       <button id="send" type="button">Send</button>
     </div>
-    <div class="hints">
+    <div class="hints" id="hints">
       <button type="button" data-hint="help">help</button>
       <button type="button" data-hint="audit">audit</button>
       <button type="button" data-hint="plan https://httpbin.org authorized program=httpbin-lab inScope=httpbin.org">plan httpbin</button>
+      <button type="button" data-hint="scan https://httpbin.org authorized program=httpbin-lab inScope=httpbin.org">scan httpbin</button>
+      <button type="button" data-hint="dispatch httpx https://httpbin.org authorized program=httpbin-lab inScope=httpbin.org">dispatch httpx</button>
+      <button type="button" data-dyn="status" class="primary" hidden>status</button>
+      <button type="button" data-dyn="tasks" class="primary" hidden>tasks</button>
+      <button type="button" data-dyn="findings" class="primary" hidden>findings</button>
     </div>
   </footer>
 <script>
@@ -182,13 +204,27 @@ export const MOBILE_HTML = `<!DOCTYPE html>
   const log = document.getElementById('log');
   const msg = document.getElementById('msg');
   const secret = document.getElementById('secret');
+  const secretRow = document.getElementById('secretRow');
   const send = document.getElementById('send');
+  const session = document.getElementById('session');
   const KEY = 'stormforge.mobile.secret';
+  const SCAN_KEY = 'stormforge.mobile.scanId';
+  const PROG_KEY = 'stormforge.mobile.program';
+  let lastScanId = '';
+  let lastProgram = '';
 
-  try { secret.value = localStorage.getItem(KEY) || ''; } catch (_) {}
-  secret.addEventListener('change', () => {
+  try {
+    secret.value = localStorage.getItem(KEY) || '';
+    lastScanId = localStorage.getItem(SCAN_KEY) || '';
+    lastProgram = localStorage.getItem(PROG_KEY) || '';
+  } catch (_) {}
+
+  function persistSecret() {
     try { localStorage.setItem(KEY, secret.value); } catch (_) {}
-  });
+  }
+  secret.addEventListener('change', persistSecret);
+  secret.addEventListener('blur', persistSecret);
+  secret.addEventListener('input', () => secretRow.classList.remove('bad'));
 
   function bubble(text, kind) {
     const el = document.createElement('div');
@@ -198,25 +234,67 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     log.scrollTop = log.scrollHeight;
   }
 
-  bubble('Commands need the word "authorized" for plan/scan/dispatch.\\nType help for the cheat-sheet.', 'bot');
+  function refreshSession() {
+    const bits = [];
+    if (lastScanId) bits.push('scanId=' + lastScanId);
+    if (lastProgram) bits.push('program=' + lastProgram);
+    session.textContent = bits.join(' · ');
+    document.querySelectorAll('[data-dyn]').forEach((btn) => {
+      const kind = btn.getAttribute('data-dyn');
+      if (kind === 'status' || kind === 'tasks') {
+        btn.hidden = !lastScanId;
+        btn.setAttribute('data-hint', kind + ' ' + lastScanId);
+      } else if (kind === 'findings') {
+        btn.hidden = !lastProgram;
+        btn.setAttribute('data-hint', 'findings ' + lastProgram);
+      }
+    });
+  }
+
+  function rememberFromData(data) {
+    if (data && data.scanId) {
+      lastScanId = String(data.scanId);
+      try { localStorage.setItem(SCAN_KEY, lastScanId); } catch (_) {}
+    }
+    if (data && data.program) {
+      lastProgram = String(data.program);
+      try { localStorage.setItem(PROG_KEY, lastProgram); } catch (_) {}
+    }
+    refreshSession();
+  }
+
+  bubble('Commands need the word "authorized" for plan/scan/dispatch.\\nPaste your EXECUTOR_SECRET above, then type help.', 'bot');
+  refreshSession();
 
   async function run() {
     const text = (msg.value || '').trim();
     if (!text) return;
+    if (!secret.value.trim()) {
+      secretRow.classList.add('bad');
+      secret.focus();
+      bubble('Paste your EXECUTOR_SECRET first (same value as the remote executor).', 'bot err');
+      return;
+    }
     bubble(text, 'user');
     msg.value = '';
     send.disabled = true;
     try {
-      const headers = { 'content-type': 'application/json' };
-      if (secret.value) headers['x-executor-secret'] = secret.value;
+      const headers = {
+        'content-type': 'application/json',
+        'x-executor-secret': secret.value.trim(),
+      };
       const res = await fetch('/api/orchestrate', {
         method: 'POST',
         headers,
         body: JSON.stringify({ message: text }),
       });
       const data = await res.json().catch(() => ({ text: res.statusText }));
+      if (res.status === 401) secretRow.classList.add('bad');
       const out = data.text || data.error || JSON.stringify(data, null, 2);
       bubble(out, res.ok ? 'bot' : 'bot err');
+      if (res.ok && data.data) rememberFromData(data.data);
+      const scanMatch = /scanId=([a-z0-9-]{6,})/i.exec(out);
+      if (res.ok && scanMatch) rememberFromData({ scanId: scanMatch[1] });
     } catch (e) {
       bubble(String(e && e.message ? e.message : e), 'bot err');
     } finally {
@@ -229,11 +307,11 @@ export const MOBILE_HTML = `<!DOCTYPE html>
   msg.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); run(); }
   });
-  document.querySelectorAll('[data-hint]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      msg.value = btn.getAttribute('data-hint') || '';
-      msg.focus();
-    });
+  document.getElementById('hints').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-hint]');
+    if (!btn) return;
+    msg.value = btn.getAttribute('data-hint') || '';
+    msg.focus();
   });
 })();
 </script>

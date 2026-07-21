@@ -21,7 +21,7 @@ export async function runScan(
   env: Env,
   onProgress?: ScanProgress,
 ): Promise<ScanReport> {
-  const scanId = crypto.randomUUID();
+  const scanId = (req.scanId && req.scanId.trim()) || crypto.randomUUID();
   const startedAt = new Date().toISOString();
 
   const rps = clampNumber(env.MAX_RPS, 5, 1, 50);

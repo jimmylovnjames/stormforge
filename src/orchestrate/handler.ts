@@ -8,13 +8,25 @@ import { FindingsStore } from '../findings/store.js';
 import { draftDisclosure } from '../report/drafter.js';
 import { planAttackSurface } from '../planning/vuln-planner.js';
 import { auditLog, listAuditEvents } from '../audit/log.js';
-import { enqueueTasks } from '../tasks/queue.js';
+import { enqueueTasks, getPendingIds } from '../tasks/queue.js';
 
 export interface OrchestrateResult {
   ok: boolean;
   text: string;
   data?: unknown;
   status?: number;
+}
+
+interface ScanStatusBody {
+  scanId?: string;
+  status?: string;
+  phase?: string;
+  probed?: number;
+  total?: number;
+  findings?: number;
+  error?: string;
+  startedAt?: string;
+  executorTasksEnqueued?: number;
 }
 
 function scopeFromCmd(cmd: ParsedCommand): Scope {
@@ -119,42 +131,111 @@ export async function handleParsedCommand(
       const id = env.SCAN_ORCHESTRATOR.idFromName(cmd.scanId);
       const stub = env.SCAN_ORCHESTRATOR.get(id);
       const res = await stub.fetch('https://do/status');
-      const body = (await res.json()) as Record<string, unknown>;
-      const text = [
-        `Scan ${cmd.scanId}`,
-        `HTTP ${res.status}`,
-        typeof body.status === 'string' ? `status=${body.status}` : '',
-        body.findingsCount != null ? `findings=${body.findingsCount}` : '',
-        JSON.stringify(body).slice(0, 800),
-      ]
-        .filter(Boolean)
-        .join('\n');
-      return { ok: res.ok, text, data: body, status: res.ok ? 200 : res.status };
+      const body = (await res.json()) as ScanStatusBody;
+      const taskCount = await countTasksForScan(env, cmd.scanId);
+
+      if (!res.ok) {
+        return {
+          ok: false,
+          text: `Could not load status for ${cmd.scanId}`,
+          data: body,
+          status: res.status,
+        };
+      }
+
+      const lines = [
+        `Passive scan ${cmd.scanId}`,
+        `status=${body.status ?? 'unknown'}${body.phase ? ` phase=${body.phase}` : ''}`,
+        body.probed != null || body.total != null
+          ? `probed=${body.probed ?? 0}/${body.total ?? 0}`
+          : '',
+        `findings=${body.findings ?? 0}`,
+        body.executorTasksEnqueued != null
+          ? `hybridTasksEnqueued=${body.executorTasksEnqueued}`
+          : '',
+        body.error ? `error=${body.error}` : '',
+        body.startedAt ? `started=${body.startedAt}` : '',
+      ].filter(Boolean);
+
+      if (body.status === 'idle' && !body.startedAt) {
+        lines.push(
+          taskCount > 0
+            ? `Hint: this id looks plan/dispatch-only — use: tasks ${cmd.scanId}`
+            : 'Hint: no passive scan started for this id. If you planned/dispatched, use: tasks <scanId>',
+        );
+      } else if (taskCount > 0) {
+        lines.push(`executorTasksLinked=${taskCount} — details: tasks ${cmd.scanId}`);
+      } else if ((body.executorTasksEnqueued ?? 0) > 0) {
+        lines.push(`Next: tasks ${cmd.scanId} (executor must be polling)`);
+      }
+
+      return { ok: true, text: lines.join('\n'), data: { ...body, scanId: cmd.scanId, taskCount } };
     }
 
     case 'tasks': {
       if (cmd.error || !cmd.scanId) {
         return { ok: false, text: cmd.error || 'Usage: tasks <scanId>', status: 400 };
       }
-      const list = await env.STORMFORGE_KV.list({ prefix: 'task:' });
       const tasks: ToolTask[] = [];
+      const list = await env.STORMFORGE_KV.list({ prefix: 'task:' });
       for (const key of list.keys) {
         const raw = await env.STORMFORGE_KV.get(key.name);
         if (!raw) continue;
         const task = JSON.parse(raw) as ToolTask;
         if (task.scanId === cmd.scanId) tasks.push(task);
       }
-      if (tasks.length === 0) {
-        return { ok: true, text: `No tasks for scan ${cmd.scanId}.`, data: { tasks: [] } };
+
+      const pendingGlobal = (await getPendingIds(env)).length;
+      const counts = {
+        pending: 0,
+        running: 0,
+        done: 0,
+        error: 0,
+        timeout: 0,
+      };
+      for (const t of tasks) {
+        if (t.status in counts) counts[t.status as keyof typeof counts]++;
       }
-      const text = tasks
+
+      if (tasks.length === 0) {
+        return {
+          ok: true,
+          text: [
+            `No executor tasks for scan ${cmd.scanId}.`,
+            `Global pending queue: ${pendingGlobal}`,
+            'If this was a passive-only scan, try: status ' + cmd.scanId,
+            'If you expected hybrid tasks, confirm SCAN_MODE=hybrid and executor is polling.',
+          ].join('\n'),
+          data: { tasks: [], counts, pendingGlobal },
+        };
+      }
+
+      const detail = tasks
         .slice(0, 25)
-        .map((t) => `• ${t.id.slice(0, 8)} ${t.tool} ${t.status} → ${t.target}`)
+        .map((t) => {
+          const bits = [`• ${t.id.slice(0, 8)} ${t.tool} ${t.status} → ${t.target}`];
+          if (t.status === 'error' || t.status === 'timeout') {
+            const err = t.result?.stderr || t.result?.stdout || '';
+            const snippet = err.replace(/\s+/g, ' ').trim().slice(0, 120);
+            if (snippet) bits.push(`  ↳ ${snippet}`);
+            if (t.result?.timedOut) bits.push('  ↳ timed out');
+          }
+          return bits.join('\n');
+        })
         .join('\n');
+
+      const summary = `Tasks for ${cmd.scanId} (${tasks.length}): pending=${counts.pending} running=${counts.running} done=${counts.done} error=${counts.error} timeout=${counts.timeout}`;
+      const hint =
+        counts.pending + counts.running > 0
+          ? `Global pending queue: ${pendingGlobal}. Executor must poll /api/tasks/poll.`
+          : counts.done > 0
+            ? `Next: findings ${tasks[0]!.scope.program}`
+            : '';
+
       return {
         ok: true,
-        text: `Tasks for ${cmd.scanId} (${tasks.length}):\n${text}`,
-        data: { tasks: tasks.slice(0, 25) },
+        text: [summary, detail, hint].filter(Boolean).join('\n'),
+        data: { tasks: tasks.slice(0, 25), counts, pendingGlobal },
       };
     }
 
@@ -356,7 +437,7 @@ async function startPassiveScan(
   const stub = env.SCAN_ORCHESTRATOR.get(id);
   const res = await stub.fetch('https://do/start', {
     method: 'POST',
-    body: JSON.stringify({ scope, targets: cmd.targets }),
+    body: JSON.stringify({ scope, targets: cmd.targets, scanId }),
     headers: { 'content-type': 'application/json' },
   });
   if (!res.ok) {
@@ -371,14 +452,31 @@ async function startPassiveScan(
     meta: { scanId, targets: cmd.targets.length, actor },
   });
 
+  const hybridNote =
+    (env.SCAN_MODE || '').toLowerCase() === 'hybrid'
+      ? `Hybrid mode on — after passive finishes, remote tasks share scanId. Next: status ${scanId} then tasks ${scanId}`
+      : `Next: status ${scanId} | findings ${scope.program}`;
+
   return {
     ok: true,
     text: [
       `Passive scan started → scanId=${scanId}`,
       `Program: ${scope.program}`,
       `Targets: ${cmd.targets.join(', ')}`,
-      `Next: status ${scanId} | findings ${scope.program}`,
+      hybridNote,
     ].join('\n'),
     data: { scanId, status: 'running', program: scope.program },
   };
+}
+
+async function countTasksForScan(env: Env, scanId: string): Promise<number> {
+  const list = await env.STORMFORGE_KV.list({ prefix: 'task:' });
+  let n = 0;
+  for (const key of list.keys) {
+    const raw = await env.STORMFORGE_KV.get(key.name);
+    if (!raw) continue;
+    const task = JSON.parse(raw) as ToolTask;
+    if (task.scanId === scanId) n++;
+  }
+  return n;
 }

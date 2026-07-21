@@ -130,19 +130,29 @@ function authenticateOperator(request: Request, env: Env): boolean {
 async function handleOrchestrate(request: Request, env: Env, baseUrl: string): Promise<Response> {
   if (!authenticateOperator(request, env)) {
     await auditLog(env, { action: 'auth.failed', detail: 'orchestrate unauthorized' });
-    return json({ ok: false, error: 'Unauthorized — set x-executor-secret' }, 401);
+    return json(
+      {
+        ok: false,
+        error: 'Unauthorized — set x-executor-secret',
+        text: 'Unauthorized — paste your EXECUTOR_SECRET as header x-executor-secret (or into /m).',
+      },
+      401,
+    );
   }
 
   let body: { message?: string };
   try {
     body = (await request.json()) as { message?: string };
   } catch {
-    return json({ ok: false, error: 'Invalid JSON body' }, 400);
+    return json({ ok: false, error: 'Invalid JSON body', text: 'Invalid JSON body' }, 400);
   }
 
   const message = typeof body.message === 'string' ? body.message : '';
   if (!message.trim()) {
-    return json({ ok: false, error: 'Missing message. Try {"message":"help"}' }, 400);
+    return json(
+      { ok: false, error: 'Missing message. Try {"message":"help"}', text: 'Missing message. Try help' },
+      400,
+    );
   }
 
   const result = await handleOrchestrateMessage(env, message, {
@@ -398,7 +408,7 @@ async function handleStartScan(request: Request, env: Env): Promise<Response> {
   const stub = env.SCAN_ORCHESTRATOR.get(id);
   const res = await stub.fetch('https://do/start', {
     method: 'POST',
-    body: JSON.stringify(req),
+    body: JSON.stringify({ ...req, scanId }),
     headers: { 'content-type': 'application/json' },
   });
   if (!res.ok) return new Response(await res.text(), { status: res.status });
