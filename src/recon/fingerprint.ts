@@ -46,6 +46,9 @@ const BODY_RULES: { product: string; regex: RegExp }[] = [
   { product: 'ReDoc', regex: /<redoc[\s>]|redoc\.standalone/i },
   { product: 'OpenAPI', regex: /"openapi"\s*:\s*"3\./i },
   { product: 'Swagger', regex: /"swagger"\s*:\s*"2\.0"/i },
+  // Auth / identity surfaces
+  { product: 'JWT', regex: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\./ },
+  { product: 'OAuth', regex: /"access_token"\s*:|"token_type"\s*:\s*"bearer"/i },
 ];
 
 export function fingerprint(probe: ProbeResult): TechMatch[] {

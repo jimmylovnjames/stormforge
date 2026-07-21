@@ -9,6 +9,8 @@ import { cookiesCheck } from './checks/cookies.js';
 import { versionCveCheck } from './checks/version-cve.js';
 import { apiSchemaExposureCheck } from './checks/api-schema-exposure.js';
 import { graphqlIntrospectionCheck } from './checks/graphql-introspection.js';
+import { authAccessCheck } from './checks/auth-access.js';
+import { weakJwtCheck } from './checks/weak-jwt.js';
 import { scanSecrets } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -19,6 +21,8 @@ const REGISTRY: Check[] = [
   versionCveCheck,
   apiSchemaExposureCheck,
   graphqlIntrospectionCheck,
+  authAccessCheck,
+  weakJwtCheck,
 ];
 
 export function registerCheck(check: Check): void {

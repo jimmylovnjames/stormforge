@@ -119,8 +119,45 @@ export const API_PROBE_PATHS: string[] = [
   '/login',
   '/admin',
   '/user',
+  '/users',
   '/account',
   '/auth',
   '/oauth',
   '/session',
+  '/me',
+  '/profile',
+];
+
+/**
+ * High-signal auth / IDOR probe paths with predictable object IDs.
+ * Unauthenticated 2xx + sensitive body markers → candidate access-control finding.
+ */
+export const AUTH_IDOR_PATHS: string[] = [
+  '/me',
+  '/api/me',
+  '/api/v1/me',
+  '/api/v1/user',
+  '/api/v1/users',
+  '/api/v1/users/1',
+  '/api/v1/users/me',
+  '/api/v1/profile',
+  '/api/v1/profile/1',
+  '/api/v1/account',
+  '/api/v1/accounts/1',
+  '/api/v1/orders/1',
+  '/api/v1/admin',
+  '/api/v1/admin/users',
+  '/api/users',
+  '/api/users/1',
+  '/api/user/1',
+  '/api/admin',
+  '/api/admin/users',
+  '/user/1',
+  '/users/1',
+  '/users/me',
+  '/account/1',
+  '/accounts/1',
+  '/admin/users',
+  '/admin/user/1',
+  '/profile/1',
 ];

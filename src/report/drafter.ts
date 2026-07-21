@@ -75,6 +75,17 @@ export function draftDisclosure(findings: Finding[], scope: Scope): string {
 }
 
 function impactStatement(f: Finding): string {
+  // CWE-specific impact for access-control / JWT findings.
+  if (f.cwe === 'CWE-639') {
+    return 'Broken object-level authorization (IDOR) can expose or manipulate other users’ objects by changing predictable identifiers — often leading to bulk personal data disclosure.';
+  }
+  if (f.cwe === 'CWE-284') {
+    return 'Missing or ineffective authorization on authenticated/admin surfaces can grant anonymous callers access to account data or privileged operations.';
+  }
+  if (f.cwe === 'CWE-347') {
+    return 'Acceptance or issuance of weak JWTs (alg=none / empty signature) can allow forged identity claims and full authentication bypass.';
+  }
+
   switch (f.severity) {
     case 'critical':
       return 'If confirmed, this issue could lead to full compromise of the affected asset or exposure of highly sensitive data.';
@@ -84,8 +95,12 @@ function impactStatement(f: Finding): string {
       return 'This issue weakens the security posture and could be chained with others for greater impact.';
     case 'low':
       return 'This is a hardening gap with limited direct impact but worth remediating.';
-    default:
+    case 'info':
       return 'Informational — documents a deviation from best practice.';
+    default: {
+      const _exhaustive: never = f.severity;
+      return `Severity ${_exhaustive}`;
+    }
   }
 }
 
