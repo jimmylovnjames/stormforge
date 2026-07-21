@@ -13,6 +13,11 @@ import {
   parseBodySignals,
   shouldFollowUpGraphqlIntrospection,
 } from '../recon/body-parse.js';
+import {
+  REFLECTION_PATHS,
+  buildInjectionProbeUrls,
+  shouldProbeInjection,
+} from '../recon/injection-probes.js';
 import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
@@ -90,7 +95,31 @@ export async function runScan(
     });
   }
 
-  // 5. Run detection checks over all probes.
+  // 5. Safe XSS / SSTI canary follow-ups (GET query params only).
+  const injectionUrls = collectInjectionFollowUps(probes);
+  const { allowed: allowedInjection } = partitionByScope(injectionUrls, req.scope);
+  const freshInjection = allowedInjection.filter((u) => !probes.some((p) => p.url === u));
+  if (freshInjection.length) {
+    await mapWithConcurrency(freshInjection, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: {
+          origin: PROBE_ORIGIN,
+          accept: 'text/html, application/xhtml+xml, application/json;q=0.9, */*;q=0.8',
+        },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({
+        phase: 'injection-probe',
+        probed,
+        total: probes.length,
+        findings: 0,
+      });
+    });
+  }
+
+  // 6. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
     const findings = runChecks(probe, { scope: req.scope, siblings: probes });
@@ -99,7 +128,7 @@ export async function runScan(
   const findings = [...dedup.values()];
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 6. Assemble report.
+  // 7. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -145,6 +174,33 @@ export function collectGraphqlFollowUps(probes: ProbeResult[]): string[] {
   return [...out];
 }
 
+/** Build XSS/SSTI canary follow-up URLs from HTML / reflection candidates. */
+export function collectInjectionFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  let budget = 24; // hard cap per scan to stay polite
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeInjection(p)) continue;
+    const base = p.finalUrl ?? p.url;
+    // Prefer path without existing injection noise.
+    let cleanBase = base;
+    try {
+      const u = new URL(base);
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    const built = buildInjectionProbeUrls(cleanBase, 2);
+    for (const url of [...built.xss, ...built.ssti]) {
+      if (budget <= 0) break;
+      out.add(url);
+      budget--;
+    }
+  }
+  return [...out];
+}
+
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */
 function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
   const urls = new Set<string>();
@@ -152,6 +208,7 @@ function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
     ...API_PROBE_PATHS,
     ...BRUTEFORCE_PATHS,
     ...AUTH_IDOR_PATHS,
+    ...REFLECTION_PATHS,
     ...SECRET_LEAK_PATHS,
     ...SENSITIVE_PATHS,
     ...extraPaths,

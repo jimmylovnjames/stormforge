@@ -12,6 +12,7 @@ import { graphqlIntrospectionCheck } from './checks/graphql-introspection.js';
 import { authAccessCheck } from './checks/auth-access.js';
 import { weakJwtCheck } from './checks/weak-jwt.js';
 import { rateLimitCheck } from './checks/rate-limit.js';
+import { xssInjectionCheck } from './checks/xss-injection.js';
 import { secretsExposureCheck } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -26,6 +27,7 @@ const REGISTRY: Check[] = [
   weakJwtCheck,
   secretsExposureCheck,
   rateLimitCheck,
+  xssInjectionCheck,
 ];
 
 export function registerCheck(check: Check): void {

@@ -37,6 +37,7 @@ const HEADER_RULES: HeaderRule[] = [
   { header: 'x-ratelimit-limit', product: 'Rate Limiting' },
   { header: 'x-rate-limit-limit', product: 'Rate Limiting' },
   { header: 'cf-ray', product: 'Cloudflare' },
+  { header: 'content-security-policy', product: 'CSP' },
 ];
 
 const BODY_RULES: { product: string; regex: RegExp }[] = [

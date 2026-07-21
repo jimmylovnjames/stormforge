@@ -100,6 +100,15 @@ function impactStatement(f: Finding): string {
   if (f.cwe === 'CWE-770') {
     return 'Missing or weak rate limiting on authentication and token endpoints enables credential stuffing, OTP/password guessing, and request floods that degrade availability.';
   }
+  if (f.cwe === 'CWE-79') {
+    return 'Cross-site scripting lets attackers execute script in victims’ browsers, steal sessions, deface content, or pivot to further account takeover.';
+  }
+  if (f.cwe === 'CWE-94') {
+    return 'Server-side template injection can escalate from expression evaluation to remote code execution depending on the template engine and sandbox.';
+  }
+  if (f.cwe === 'CWE-209') {
+    return 'Verbose error messages disclose implementation details that help attackers refine injection and template attacks.';
+  }
 
   switch (f.severity) {
     case 'critical':
