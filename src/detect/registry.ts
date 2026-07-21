@@ -21,6 +21,7 @@ import { sqlInjectionCheck } from './checks/sql-injection.js';
 import { crlfInjectionCheck } from './checks/crlf-injection.js';
 import { prototypePollutionCheck } from './checks/prototype-pollution.js';
 import { cloudBucketCheck } from './checks/cloud-bucket.js';
+import { cacheDeceptionCheck } from './checks/cache-deception.js';
 import { secretsExposureCheck } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -44,6 +45,7 @@ const REGISTRY: Check[] = [
   crlfInjectionCheck,
   prototypePollutionCheck,
   cloudBucketCheck,
+  cacheDeceptionCheck,
 ];
 
 export function registerCheck(check: Check): void {

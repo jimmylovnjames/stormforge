@@ -215,7 +215,8 @@ export function planPathsFromFindings(findings: Finding[]): PlannerSuggestion {
         paths.push('/download', '/file', '/static', '/api/file', '/view', '/include', '/page');
         break;
       case 'host-header-injection':
-        paths.push('/', '/login', '/reset-password', '/account', '/forgot-password');
+      case 'cache-deception':
+        paths.push('/', '/login', '/reset-password', '/account', '/forgot-password', '/me', '/profile', '/api/v1/me');
         break;
       case 'cloud-bucket-exposure':
         paths.push('/assets/', '/static/', '/uploads/', '/media/', '/files/', '/backup/', '/data/');

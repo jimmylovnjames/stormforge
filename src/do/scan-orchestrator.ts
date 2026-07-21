@@ -5,6 +5,7 @@
 import type { Env, ScanReport, ScanRequest } from '../types.js';
 import { runScan } from '../engine/scanner.js';
 import { FindingsStore } from '../findings/store.js';
+import { dispatchFollowUpsFromFindings } from '../planning/dispatch-followups.js';
 
 interface ScanState {
   status: 'idle' | 'running' | 'done' | 'error';
@@ -12,6 +13,7 @@ interface ScanState {
   probed: number;
   total: number;
   findings: number;
+  followUpsDispatched?: number;
   report?: ScanReport;
   error?: string;
   startedAt?: string;
@@ -54,12 +56,22 @@ export class ScanOrchestrator {
       // Persist findings for cross-scan dedupe + reporting.
       const store = new FindingsStore(this.env.STORMFORGE_KV);
       await store.upsertMany(req.scope.program, report.findings);
+
+      // Autonomy: Worker findings → remote executor follow-up wave.
+      const followUpsDispatched = await dispatchFollowUpsFromFindings(
+        this.env,
+        report.findings,
+        req.scope,
+        { scanId: report.scanId, maxTasks: 8 },
+      );
+
       this.state = {
         status: 'done',
         phase: 'complete',
         probed: report.targetsProbed,
         total: report.targetsProbed,
         findings: report.findings.length,
+        followUpsDispatched,
         report,
         startedAt: this.state.startedAt,
       };

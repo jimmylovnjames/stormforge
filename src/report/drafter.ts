@@ -139,6 +139,9 @@ function impactStatement(f: Finding): string {
   if (f.cwe === 'CWE-200') {
     return 'Public object-store listings expose file keys and often leak backups, credentials, source archives, and personal data at scale.';
   }
+  if (f.cwe === 'CWE-444') {
+    return 'Web cache deception can store a victim’s authenticated response under a static URL, letting attackers retrieve private account data from shared caches.';
+  }
 
   switch (f.severity) {
     case 'critical':

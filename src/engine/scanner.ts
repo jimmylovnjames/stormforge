@@ -57,6 +57,11 @@ import {
   buildBucketProbeUrls,
   shouldProbeBucket,
 } from '../recon/bucket-probes.js';
+import {
+  CACHE_SENSITIVE_PATHS,
+  buildCacheDeceptionUrls,
+  shouldProbeCacheDeception,
+} from '../recon/cache-deception-probes.js';
 import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
@@ -295,7 +300,23 @@ export async function runScan(
     });
   }
 
-  // 14. Run detection checks over all probes.
+  // 14. Path-based web cache deception probes on account-like surfaces.
+  const cacheUrls = collectCacheDeceptionFollowUps(probes);
+  const { allowed: allowedCache } = partitionByScope(cacheUrls, req.scope);
+  const freshCache = allowedCache.filter((u) => !probes.some((p) => p.url === u));
+  if (freshCache.length) {
+    await mapWithConcurrency(freshCache, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'text/html, application/json;q=0.9, */*;q=0.5' },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'cache-deception-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 15. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
     for (const f of runChecks(probe, { scope: req.scope, siblings: probes })) {
@@ -303,7 +324,7 @@ export async function runScan(
     }
   }
 
-  // 15. Autonomy second pass: findings → more paths → probe → re-check.
+  // 16. Autonomy second pass: findings → more paths → probe → re-check.
   let findings = [...dedup.values()];
   const fromFindings = planPathsFromFindings(findings);
   if (fromFindings.suggestedPaths.length) {
@@ -334,7 +355,7 @@ export async function runScan(
 
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 16. Assemble report.
+  // 17. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -616,6 +637,29 @@ export function collectBucketFollowUps(probes: ProbeResult[]): string[] {
   return [...out];
 }
 
+export function collectCacheDeceptionFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  let budget = 16;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeCacheDeception(p)) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    for (const url of buildCacheDeceptionUrls(cleanBase)) {
+      if (budget <= 0) break;
+      out.add(url);
+      budget--;
+    }
+  }
+  return [...out];
+}
+
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */
 function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
   const urls = new Set<string>();
@@ -631,6 +675,7 @@ function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
     ...CRLF_PATHS,
     ...PP_PATHS,
     ...BUCKET_APP_PATHS,
+    ...CACHE_SENSITIVE_PATHS,
     ...SECRET_LEAK_PATHS,
     ...SENSITIVE_PATHS,
     ...extraPaths,

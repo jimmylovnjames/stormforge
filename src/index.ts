@@ -17,7 +17,8 @@ import { FindingsStore, summarizeSecretFindings } from './findings/store.js';
 import { draftDisclosure } from './report/drafter.js';
 import { listChecks } from './detect/registry.js';
 import { DASHBOARD_HTML } from './dashboard-html.js';
-import { planAttackSurface, planFollowUpTasks } from './planning/vuln-planner.js';
+import { planAttackSurface } from './planning/vuln-planner.js';
+import { dispatchFollowUpsFromFindings } from './planning/dispatch-followups.js';
 
 export { ScanOrchestrator };
 
@@ -196,64 +197,27 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
   task.result = body.result;
   await env.STORMFORGE_KV.put(`task:${body.taskId}`, JSON.stringify(task));
 
-  // Persist any findings from the executor
+  // Persist any findings from the executor and close the autonomy loop.
   let followUpsDispatched = 0;
   if (body.result.findings?.length > 0) {
     const store = new FindingsStore(env.STORMFORGE_KV);
     await store.upsertMany(task.scope.program, body.result.findings);
-
-    // Autonomy loop: findings → next tool wave (scoped).
-    const follow = planFollowUpTasks(body.result.findings, task.scope, {
-      scanId: task.scanId,
-      maxTasks: 8,
-    });
-    if (follow.tasks.length) {
-      const queue = await getQueue(env);
-      for (const planned of follow.tasks) {
-        const next: ToolTask = {
-          id: crypto.randomUUID(),
-          scanId: task.scanId,
-          tool: planned.tool,
-          target: planned.target,
-          args: planned.args,
-          scope: task.scope,
-          status: 'pending',
-          timeoutSec: planned.timeoutSec || 300,
-          createdAt: new Date().toISOString(),
-        };
-        await env.STORMFORGE_KV.put(`task:${next.id}`, JSON.stringify(next));
-        queue.push(next.id);
-        followUpsDispatched++;
-      }
-      await env.STORMFORGE_KV.put('task_queue:pending', JSON.stringify(queue));
-    }
+    followUpsDispatched = await dispatchFollowUpsFromFindings(
+      env,
+      body.result.findings,
+      task.scope,
+      { scanId: task.scanId, maxTasks: 8 },
+    );
   }
 
   // Also chain from tool stdout hosts even without structured findings (subfinder/katana).
   if (followUpsDispatched === 0 && body.result.stdout) {
     const synthetic = findingsFromToolStdout(task, body.result.stdout);
     if (synthetic.length) {
-      const follow = planFollowUpTasks(synthetic, task.scope, { scanId: task.scanId, maxTasks: 5 });
-      if (follow.tasks.length) {
-        const queue = await getQueue(env);
-        for (const planned of follow.tasks) {
-          const next: ToolTask = {
-            id: crypto.randomUUID(),
-            scanId: task.scanId,
-            tool: planned.tool,
-            target: planned.target,
-            args: planned.args,
-            scope: task.scope,
-            status: 'pending',
-            timeoutSec: planned.timeoutSec || 300,
-            createdAt: new Date().toISOString(),
-          };
-          await env.STORMFORGE_KV.put(`task:${next.id}`, JSON.stringify(next));
-          queue.push(next.id);
-          followUpsDispatched++;
-        }
-        await env.STORMFORGE_KV.put('task_queue:pending', JSON.stringify(queue));
-      }
+      followUpsDispatched = await dispatchFollowUpsFromFindings(env, synthetic, task.scope, {
+        scanId: task.scanId,
+        maxTasks: 5,
+      });
     }
   }
 
