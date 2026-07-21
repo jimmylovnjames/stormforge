@@ -62,6 +62,7 @@ import {
   buildCacheDeceptionUrls,
   shouldProbeCacheDeception,
 } from '../recon/cache-deception-probes.js';
+import { DOH_ENDPOINT, parseDohResponse } from '../recon/takeover.js';
 import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
@@ -316,7 +317,17 @@ export async function runScan(
     });
   }
 
-  // 15. Run detection checks over all probes.
+  // 15. DNS / subdomain-takeover lookups via DoH (scoped hosts only).
+  const dnsProbes = await collectTakeoverDnsProbes(probes, req.scope, concurrency);
+  for (const p of dnsProbes) {
+    probes.push(p);
+    probed++;
+  }
+  if (dnsProbes.length) {
+    onProgress?.({ phase: 'takeover-dns', probed, total: probes.length, findings: 0 });
+  }
+
+  // 16. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
     for (const f of runChecks(probe, { scope: req.scope, siblings: probes })) {
@@ -324,7 +335,7 @@ export async function runScan(
     }
   }
 
-  // 16. Autonomy second pass: findings → more paths → probe → re-check.
+  // 17. Autonomy second pass: findings → more paths → probe → re-check.
   let findings = [...dedup.values()];
   const fromFindings = planPathsFromFindings(findings);
   if (fromFindings.suggestedPaths.length) {
@@ -355,7 +366,7 @@ export async function runScan(
 
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 17. Assemble report.
+  // 18. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -658,6 +669,70 @@ export function collectCacheDeceptionFollowUps(probes: ProbeResult[]): string[] 
     }
   }
   return [...out];
+}
+
+/**
+ * DoH lookups for unique in-scope hosts. Emits synthetic ProbeResults that
+ * subdomainTakeoverCheck consumes (tagged with x-stormforge-dns).
+ */
+export async function collectTakeoverDnsProbes(
+  probes: ProbeResult[],
+  scope: { inScope: string[]; outOfScope: string[]; authorized: boolean },
+  concurrency: number,
+): Promise<ProbeResult[]> {
+  const hosts = new Set<string>();
+  for (const p of probes) {
+    try {
+      const h = hostOf(p.url);
+      // Only check leaf hosts that look like subdomains (have >2 labels) or any in-scope host.
+      if (h.split('.').length >= 2) hosts.add(h.toLowerCase());
+    } catch {
+      /* skip */
+    }
+  }
+  const list = [...hosts].slice(0, 25);
+  const out: ProbeResult[] = [];
+  await mapWithConcurrency(list, Math.min(concurrency, 4), async (host) => {
+    // Scope-gate: only lookup hosts that would be allowed as https://host/
+    const { allowed } = partitionByScope([`https://${host}/`], scope as import('../types.js').Scope);
+    if (!allowed.length) return;
+    const started = Date.now();
+    try {
+      const cnameRes = await fetch(
+        `${DOH_ENDPOINT}?name=${encodeURIComponent(host)}&type=CNAME`,
+        { headers: { accept: 'application/dns-json' } },
+      );
+      const cnameJson = (await cnameRes.json()) as { Status?: number; Answer?: Array<{ type: number; data: string }> };
+      const aRes = await fetch(
+        `${DOH_ENDPOINT}?name=${encodeURIComponent(host)}&type=A`,
+        { headers: { accept: 'application/dns-json' } },
+      );
+      const aJson = (await aRes.json()) as { Status?: number; Answer?: Array<{ type: number; data: string }> };
+      const merged = parseDohResponse(host, {
+        Status: aJson.Status ?? cnameJson.Status,
+        Answer: [...(cnameJson.Answer ?? []), ...(aJson.Answer ?? [])],
+      });
+      out.push({
+        url: `https://${host}/`,
+        method: 'GET',
+        status: 200,
+        headers: { 'x-stormforge-dns': 'takeover-lookup', 'content-type': 'application/json' },
+        body: JSON.stringify(merged),
+        elapsedMs: Date.now() - started,
+      });
+    } catch (e) {
+      out.push({
+        url: `https://${host}/`,
+        method: 'GET',
+        status: 0,
+        headers: { 'x-stormforge-dns': 'takeover-lookup' },
+        body: '',
+        elapsedMs: Date.now() - started,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+  return out;
 }
 
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */

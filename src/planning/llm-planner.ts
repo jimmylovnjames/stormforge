@@ -218,6 +218,9 @@ export function planPathsFromFindings(findings: Finding[]): PlannerSuggestion {
       case 'cache-deception':
         paths.push('/', '/login', '/reset-password', '/account', '/forgot-password', '/me', '/profile', '/api/v1/me');
         break;
+      case 'subdomain-takeover':
+        paths.push('/');
+        break;
       case 'cloud-bucket-exposure':
         paths.push('/assets/', '/static/', '/uploads/', '/media/', '/files/', '/backup/', '/data/');
         break;

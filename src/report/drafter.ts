@@ -85,6 +85,9 @@ function impactStatement(f: Finding): string {
   if (f.cwe === 'CWE-639') {
     return 'Broken object-level authorization (IDOR) can expose or manipulate other users’ objects by changing predictable identifiers — often leading to bulk personal data disclosure.';
   }
+  if (f.checkId === 'subdomain-takeover') {
+    return 'A dangling DNS CNAME lets an attacker claim the upstream service and host attacker-controlled content on a trusted subdomain — often leading to cookie theft, OAuth takeover, or phishing.';
+  }
   if (f.cwe === 'CWE-284') {
     return 'Missing or ineffective authorization on authenticated/admin surfaces can grant anonymous callers access to account data or privileged operations.';
   }

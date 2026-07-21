@@ -325,6 +325,20 @@ export function planFollowUpTasks(
       }
     }
 
+    // Subdomain enum / takeover → nuclei takeover templates
+    if (/subdomain-takeover|subfinder|recon-subfinder/i.test(f.checkId)) {
+      push({
+        tool: 'nuclei',
+        target,
+        args: {
+          flags: '-silent -c 20',
+          templates: 'http/takeovers,takeovers',
+        },
+        timeoutSec: 300,
+        rationale: `Nuclei takeover templates after ${f.checkId}`,
+      });
+    }
+
     // New hostnames in evidence → httpx
     const hosts = extractHostsFromText(`${f.target}\n${f.evidence ?? ''}`);
     for (const host of hosts) {
