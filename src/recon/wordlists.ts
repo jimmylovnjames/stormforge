@@ -214,3 +214,44 @@ export const AUTH_IDOR_PATHS: string[] = [
   '/admin/user/1',
   '/profile/1',
 ];
+
+/**
+ * Auth / token / OTP / password-reset surfaces where missing rate limits
+ * enable credential stuffing and online guessing (brute-force).
+ */
+export const BRUTEFORCE_PATHS: string[] = [
+  '/login',
+  '/signin',
+  '/sign-in',
+  '/log-in',
+  '/auth',
+  '/auth/login',
+  '/api/login',
+  '/api/auth',
+  '/api/auth/login',
+  '/api/v1/login',
+  '/api/v1/auth',
+  '/api/v1/auth/login',
+  '/session',
+  '/api/session',
+  '/oauth/token',
+  '/oauth2/token',
+  '/token',
+  '/api/token',
+  '/api/v1/token',
+  '/forgot-password',
+  '/reset-password',
+  '/password/reset',
+  '/password/forgot',
+  '/api/v1/password/reset',
+  '/otp',
+  '/api/otp',
+  '/api/v1/otp',
+  '/mfa',
+  '/2fa',
+  '/register',
+  '/signup',
+  '/sign-up',
+  '/api/register',
+  '/api/v1/register',
+];

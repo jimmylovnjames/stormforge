@@ -97,6 +97,9 @@ function impactStatement(f: Finding): string {
   if (f.cwe === 'CWE-312') {
     return 'Cleartext credentials (connection strings, embedded basic-auth URLs) in HTTP responses expose infrastructure secrets and often unlock direct database or message-bus access.';
   }
+  if (f.cwe === 'CWE-770') {
+    return 'Missing or weak rate limiting on authentication and token endpoints enables credential stuffing, OTP/password guessing, and request floods that degrade availability.';
+  }
 
   switch (f.severity) {
     case 'critical':

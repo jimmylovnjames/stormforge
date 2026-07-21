@@ -32,6 +32,11 @@ const HEADER_RULES: HeaderRule[] = [
   { header: 'x-apollo-operation-name', product: 'Apollo GraphQL' },
   { header: 'x-hasura-role', product: 'Hasura' },
   { header: 'x-hasura-query-id', product: 'Hasura' },
+  // Rate limiting / edge controls
+  { header: 'ratelimit-limit', product: 'Rate Limiting' },
+  { header: 'x-ratelimit-limit', product: 'Rate Limiting' },
+  { header: 'x-rate-limit-limit', product: 'Rate Limiting' },
+  { header: 'cf-ray', product: 'Cloudflare' },
 ];
 
 const BODY_RULES: { product: string; regex: RegExp }[] = [

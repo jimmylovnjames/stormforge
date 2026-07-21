@@ -7,7 +7,7 @@
 import type { Env, Finding, ProbeResult, ScanReport, ScanRequest } from '../types.js';
 import { HttpClient, RateLimiter } from '../recon/http-client.js';
 import { partitionByScope, hostOf } from '../scope/scope-guard.js';
-import { SENSITIVE_PATHS, API_PROBE_PATHS, AUTH_IDOR_PATHS, SECRET_LEAK_PATHS } from '../recon/wordlists.js';
+import { SENSITIVE_PATHS, API_PROBE_PATHS, AUTH_IDOR_PATHS, SECRET_LEAK_PATHS, BRUTEFORCE_PATHS } from '../recon/wordlists.js';
 import {
   buildGraphqlIntrospectionUrl,
   parseBodySignals,
@@ -148,7 +148,14 @@ export function collectGraphqlFollowUps(probes: ProbeResult[]): string[] {
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */
 function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
   const urls = new Set<string>();
-  const paths = [...API_PROBE_PATHS, ...AUTH_IDOR_PATHS, ...SECRET_LEAK_PATHS, ...SENSITIVE_PATHS, ...extraPaths];
+  const paths = [
+    ...API_PROBE_PATHS,
+    ...BRUTEFORCE_PATHS,
+    ...AUTH_IDOR_PATHS,
+    ...SECRET_LEAK_PATHS,
+    ...SENSITIVE_PATHS,
+    ...extraPaths,
+  ];
   for (const t of targets) {
     // If the seed already has a path, probe it directly too.
     if (/^https?:\/\/.+\/.+/.test(t)) urls.add(t);
