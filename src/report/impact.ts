@@ -39,6 +39,9 @@ export function impactForFinding(f: Finding): string {
   if (f.cwe === 'CWE-601') {
     return 'Open redirects enable phishing and token/session theft by sending users from a trusted domain to an attacker-controlled site.';
   }
+  if (f.cwe === 'CWE-598') {
+    return 'Secrets or OAuth tokens in URLs leak through Referer headers, proxy logs, and browser history — enabling account takeover.';
+  }
   if (f.cwe === 'CWE-918') {
     return 'Server-side request forgery can reach internal services and cloud metadata endpoints, often yielding credentials and full environment compromise.';
   }

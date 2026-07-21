@@ -6,6 +6,7 @@
 import type { Finding, Severity } from '../types.js';
 import { SEVERITY_ORDER } from '../types.js';
 import { compareSeverityDesc } from './severity.js';
+import { enrichFinding } from './confidence.js';
 
 const FINDING_PREFIX = 'finding:';
 const INDEX_PREFIX = 'index:';
@@ -14,6 +15,8 @@ export interface FindingsQuery {
   checkId?: string;
   /** Minimum severity inclusive (e.g. 'high' → high + critical). */
   minSeverity?: Severity;
+  /** Only findings marked submitReady after enrichment. */
+  submitReadyOnly?: boolean;
 }
 
 export interface SecretFindingsSummary {
@@ -43,12 +46,13 @@ export class FindingsStore {
     const ordered = [...findings].sort((a, b) => compareSeverityDesc(a.severity, b.severity));
 
     for (const f of ordered) {
-      const existed = index.has(f.id);
-      await this.kv.put(this.findingKey(program, f.id), JSON.stringify(f));
+      const enriched = enrichFinding(f);
+      const existed = index.has(enriched.id);
+      await this.kv.put(this.findingKey(program, enriched.id), JSON.stringify(enriched));
       if (existed) updated++;
       else {
         added++;
-        index.add(f.id);
+        index.add(enriched.id);
       }
     }
     await this.kv.put(this.indexKey(program), JSON.stringify([...index]));
@@ -65,7 +69,7 @@ export class FindingsStore {
     const out: Finding[] = [];
     for (const id of ids) {
       const raw = await this.kv.get(this.findingKey(program, id));
-      if (raw) out.push(JSON.parse(raw) as Finding);
+      if (raw) out.push(enrichFinding(JSON.parse(raw) as Finding));
     }
     return out.sort((a, b) => compareSeverityDesc(a.severity, b.severity));
   }
@@ -81,8 +85,18 @@ export class FindingsStore {
     return all.filter((f) => {
       if (q.checkId && f.checkId !== q.checkId) return false;
       if (q.minSeverity && SEVERITY_ORDER[f.severity] < SEVERITY_ORDER[q.minSeverity]) return false;
+      if (q.submitReadyOnly && !f.submitReady) return false;
       return true;
     });
+  }
+
+  /** Replace one finding in-place (used when promoting candidates after tool confirm). */
+  async put(program: string, finding: Finding): Promise<void> {
+    const enriched = enrichFinding(finding);
+    const index = new Set(await this.getIndex(program));
+    index.add(enriched.id);
+    await this.kv.put(this.findingKey(program, enriched.id), JSON.stringify(enriched));
+    await this.kv.put(this.indexKey(program), JSON.stringify([...index]));
   }
 
   async getSecrets(program: string): Promise<Finding[]> {

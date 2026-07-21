@@ -396,7 +396,11 @@ function parseSqlmapOutput(stdout, task) {
       remediation: 'Use parameterized queries / prepared statements. Never concatenate user input into SQL.',
       cwe: 'CWE-89',
       references: ['https://owasp.org/www-community/attacks/SQL_Injection'],
-      needsManualReview: true,
+      needsManualReview: false,
+      confidence: 0.95,
+      evidenceGrade: 'tool-confirmed',
+      submitReady: true,
+      source: 'sqlmap',
       discoveredAt: new Date().toISOString(),
     });
   }

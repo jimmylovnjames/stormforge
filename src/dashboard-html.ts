@@ -99,6 +99,13 @@ export const DASHBOARD_HTML = `<!doctype html>
   </section>
 
   <section class="panel">
+    <h2>4 · Bounty Packs</h2>
+    <p class="muted">Submit-ready high/critical drafts (CVSS-ranked). Never auto-submitted.</p>
+    <button type="button" id="loadBounty" class="secondary">Load Bounty Packs</button>
+    <div id="bounty"><p class="muted">Click load after a scan with confirmed findings.</p></div>
+  </section>
+
+  <section class="panel">
     <h2>Report Draft</h2>
     <pre id="report" class="muted">Run a scan, then click “View Report Draft”.</pre>
   </section>
@@ -163,10 +170,49 @@ function renderReport(report) {
     .sort((a,b) => rank(b.severity)-rank(a.severity))
     .map(f => \`<tr>
       <td><span class="pill \${f.severity}">\${f.severity}</span></td>
-      <td><b>\${esc(f.title)}</b><br><span class="muted">\${esc(f.target)}</span>\${f.needsManualReview ? '<br><span class="review">⚠ verify manually</span>':''}</td>
+      <td><b>\${esc(f.title)}</b><br><span class="muted">\${esc(f.target)}</span>
+        \${f.submitReady ? '<br><span class="pill high">submit-ready</span>' : ''}
+        \${f.needsManualReview ? '<br><span class="review">⚠ verify manually</span>':''}
+        \${f.confidence!=null ? '<br><span class="muted">conf ' + Math.round(f.confidence*100) + '% · ' + esc(f.evidenceGrade||'') + '</span>' : ''}
+      </td>
       <td>\${esc(f.cwe||'')}</td>
     </tr>\`).join('');
   $('findings').innerHTML = \`<table><thead><tr><th>Sev</th><th>Finding</th><th>CWE</th></tr></thead><tbody>\${rows}</tbody></table>\`;
+  if (sDraftHint(report)) loadBounty();
+}
+
+function sDraftHint(report) {
+  return (report.findings||[]).some(f => f.severity==='critical'||f.severity==='high');
+}
+
+async function loadBounty() {
+  const program = $('program').value.trim();
+  const platform = $('platform').value === 'immunefi' ? 'immunefi' : 'hackerone';
+  const res = await fetch('/api/bounty/' + encodeURIComponent(program) + '?platform=' + platform);
+  if (!res.ok) {
+    const e = await res.json().catch(()=>({}));
+    $('bounty').innerHTML = '<p class="muted">' + esc(e.error || ('No packs ('+res.status+')')) + '</p>';
+    return;
+  }
+  const data = await res.json();
+  if (!data.packets || !data.packets.length) {
+    $('bounty').innerHTML = '<p class="muted">No submit-ready packs yet (candidates need confirmation).</p>';
+    return;
+  }
+  $('bounty').innerHTML = data.packets.map((p,i) => \`
+    <div class="panel" style="margin:0.5rem 0;padding:0.75rem">
+      <b>\${i+1}. \${esc(p.submissionTitle)}</b>
+      <div class="muted">CVSS \${p.cvssScore} · \${esc(p.cvssVector)} · \${esc(p.platform)}</div>
+      <button type="button" class="secondary" data-copy="\${i}">Copy markdown</button>
+      <pre class="muted" id="bounty-md-\${i}" style="max-height:160px;overflow:auto">\${esc(p.markdown.slice(0,1200))}</pre>
+    </div>\`).join('');
+  $('bounty').querySelectorAll('[data-copy]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = btn.getAttribute('data-copy');
+      const text = data.packets[i].markdown;
+      navigator.clipboard.writeText(text).then(() => { btn.textContent = 'Copied'; });
+    });
+  });
 }
 
 async function loadReport() {
@@ -177,11 +223,10 @@ async function loadReport() {
 }
 
 const rank = (s) => ({info:0,low:1,medium:2,high:3,critical:4})[s] ?? 0;
-const esc = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 $('launch').addEventListener('click', launch);
-$('loadReport').addEventListener('click', loadReport);
+$('loadReport')?.addEventListener('click', loadReport);
+$('loadBounty')?.addEventListener('click', loadBounty);
 </script>
 </body>
-</html>
-`;
+</html>`;

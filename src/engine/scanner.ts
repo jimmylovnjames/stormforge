@@ -67,6 +67,7 @@ import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN, corsBypassOriginFor } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
 import { planNextPaths, planPathsFromFindings } from '../planning/llm-planner.js';
+import { enrichFindings } from '../findings/confidence.js';
 
 export interface ScanProgress {
   (event: { phase: string; probed: number; total: number; findings: number }): void;
@@ -380,7 +381,8 @@ export async function runScan(
 
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 19. Assemble report.
+  // Assemble report (enrich with confidence / submitReady).
+  findings = enrichFindings(findings);
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 

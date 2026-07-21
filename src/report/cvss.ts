@@ -26,6 +26,11 @@ const BY_CHECK: Record<string, Omit<CvssEstimate, 'rating'>> = {
     score: 9.8,
     rationale: 'Network SQLi without auth often yields full DB read/write',
   },
+  'sqlmap-injection': {
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',
+    score: 9.8,
+    rationale: 'sqlmap-confirmed injectable parameter',
+  },
   'ssrf-open-redirect': {
     vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:L/A:N',
     score: 9.3,
@@ -95,6 +100,11 @@ const BY_CHECK: Record<string, Omit<CvssEstimate, 'rating'>> = {
     vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:L',
     score: 7.3,
     rationale: 'Auth brute-force / stuffing without throttling',
+  },
+  'oauth-misconfig': {
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N',
+    score: 6.5,
+    rationale: 'OAuth token leak or redirect_uri abuse',
   },
   'graphql-introspection': {
     vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N',

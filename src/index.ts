@@ -21,6 +21,13 @@ import { planAttackSurface } from './planning/vuln-planner.js';
 import { dispatchFollowUpsFromFindings } from './planning/dispatch-followups.js';
 import { estimateCvss, sortByCvss } from './report/cvss.js';
 import type { BountyPlatform } from './report/templates.js';
+import {
+  enrichFinding,
+  findPromotionTarget,
+  promoteWithToolConfirmation,
+} from './findings/confidence.js';
+import { shouldAutoDraft } from './findings/prioritize.js';
+import type { Finding } from './types.js';
 
 export { ScanOrchestrator };
 
@@ -215,17 +222,61 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
   task.result = body.result;
   await env.STORMFORGE_KV.put(`task:${body.taskId}`, JSON.stringify(task));
 
-  // Persist any findings from the executor and close the autonomy loop.
   let followUpsDispatched = 0;
+  let promoted = 0;
+  let bountyDrafts = 0;
+
   if (body.result.findings?.length > 0) {
     const store = new FindingsStore(env.STORMFORGE_KV);
-    await store.upsertMany(task.scope.program, body.result.findings);
-    followUpsDispatched = await dispatchFollowUpsFromFindings(
-      env,
-      body.result.findings,
-      task.scope,
-      { scanId: task.scanId, maxTasks: 8 },
-    );
+    const existing = await store.getAll(task.scope.program);
+    const toUpsert: Finding[] = [];
+
+    for (const rawFinding of body.result.findings) {
+      const toolFinding = enrichFinding({
+        ...rawFinding,
+        source: rawFinding.source ?? task.tool,
+      });
+      const target = findPromotionTarget(existing, toolFinding);
+      if (target && /sqlmap|nuclei/i.test(task.tool)) {
+        const upgraded = promoteWithToolConfirmation(target, toolFinding);
+        await store.put(task.scope.program, upgraded);
+        promoted++;
+        // Also keep the tool finding for audit trail.
+        toUpsert.push(toolFinding);
+      } else {
+        toUpsert.push(toolFinding);
+      }
+    }
+
+    if (toUpsert.length) await store.upsertMany(task.scope.program, toUpsert);
+
+    followUpsDispatched = await dispatchFollowUpsFromFindings(env, body.result.findings, task.scope, {
+      scanId: task.scanId,
+      maxTasks: 8,
+    });
+
+    // Re-draft bounty packs when tool confirmation unlocks submit-ready findings.
+    const all = await store.getAll(task.scope.program);
+    if (shouldAutoDraft(all)) {
+      const pack = draftBountyAutomation(all, task.scope);
+      bountyDrafts = pack.count;
+      if (pack.count > 0) {
+        await env.STORMFORGE_KV.put(
+          `bounty:${task.scope.program}:latest`,
+          JSON.stringify({
+            program: task.scope.program,
+            scanId: task.scanId,
+            platform: pack.platform,
+            createdAt: new Date().toISOString(),
+            count: pack.count,
+            packets: pack.packets,
+            combinedMarkdown: pack.combinedMarkdown,
+            trigger: `executor:${task.tool}`,
+          }),
+          { expirationTtl: 7776000 },
+        );
+      }
+    }
   }
 
   // Also chain from tool stdout hosts even without structured findings (subfinder/katana).
@@ -243,6 +294,8 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
     status: task.status,
     findingsCount: body.result.findings?.length || 0,
     followUpsDispatched,
+    promoted,
+    bountyDrafts,
   });
 }
 

@@ -24,6 +24,7 @@ import { cloudBucketCheck } from './checks/cloud-bucket.js';
 import { cacheDeceptionCheck } from './checks/cache-deception.js';
 import { subdomainTakeoverCheck } from './checks/subdomain-takeover.js';
 import { debugDisclosureCheck } from './checks/debug-disclosure.js';
+import { oauthMisconfigCheck } from './checks/oauth.js';
 import { secretsExposureCheck } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -50,6 +51,7 @@ const REGISTRY: Check[] = [
   cacheDeceptionCheck,
   subdomainTakeoverCheck,
   debugDisclosureCheck,
+  oauthMisconfigCheck,
 ];
 
 export function registerCheck(check: Check): void {

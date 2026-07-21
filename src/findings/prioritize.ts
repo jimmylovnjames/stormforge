@@ -6,7 +6,8 @@ import { estimateCvss } from '../report/cvss.js';
 
 /** Prefer confirmed critical/high injection & takeover classes for executor waves. */
 const BOOST: Record<string, number> = {
-  'sql-injection-error': 40,
+      'sql-injection-error': 40,
+  'sqlmap-injection': 45,
   'command-injection': 40,
   'ssrf-open-redirect': 35,
   'path-traversal': 35,
@@ -39,11 +40,18 @@ export function score(f: Finding): number {
 
 /** True when the scan warrants an automatic disclosure draft. */
 export function shouldAutoDraft(findings: Finding[]): boolean {
-  return findings.some((f) => f.severity === 'critical' || f.severity === 'high');
+  return findings.some((f) => {
+    if (f.severity !== 'critical' && f.severity !== 'high') return false;
+    if (f.submitReady === true) return true;
+    // Legacy: confirmed canary without explicit submitReady.
+    return f.needsManualReview === false;
+  });
 }
 
 export function highImpactFindings(findings: Finding[]): Finding[] {
-  return prioritizeFindings(findings).filter(
-    (f) => f.severity === 'critical' || f.severity === 'high',
-  );
+  return prioritizeFindings(findings).filter((f) => {
+    if (f.severity !== 'critical' && f.severity !== 'high') return false;
+    if (f.submitReady === true) return true;
+    return f.needsManualReview === false;
+  });
 }

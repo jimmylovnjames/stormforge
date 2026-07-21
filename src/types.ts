@@ -97,6 +97,17 @@ export interface Finding {
    */
   needsManualReview: boolean;
   discoveredAt: string;
+  /**
+   * 0–1 confidence that the finding is real and submission-ready.
+   * Filled by enrichFinding when absent.
+   */
+  confidence?: number;
+  /** How the signal was obtained. */
+  evidenceGrade?: 'canary' | 'fingerprint' | 'tool-confirmed' | 'heuristic';
+  /** True when confidence + severity warrant a bounty draft (not auto-submit). */
+  submitReady?: boolean;
+  /** Originating detector: worker check id, nuclei, sqlmap, etc. */
+  source?: string;
 }
 
 /** Interface every detection check implements. Pure and synchronous. */

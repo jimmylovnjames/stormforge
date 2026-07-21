@@ -30,12 +30,32 @@ export interface BountyReportPacket {
 function h1AssetType(target: string): string {
   try {
     const u = new URL(target);
-    if (u.hostname.includes('s3') || u.hostname.includes('blob') || u.hostname.includes('storage')) {
+    const h = u.hostname.toLowerCase();
+    if (h.includes('s3') || h.includes('blob.core') || h.includes('storage.googleapis') || h.includes('r2.cloudflarestorage')) {
       return 'Other Asset';
     }
+    if (u.pathname.includes('graphql') || u.pathname.startsWith('/api')) return 'API';
+    if (h.split('.').length > 2) return 'Domain';
     return 'URL';
   } catch {
     return 'URL';
+  }
+}
+
+/** Best-effort asset identifier for bounty forms (wildcard scope aware). */
+export function resolveBountyAsset(target: string, scope: Scope): string {
+  try {
+    const host = new URL(target.includes('://') ? target : `https://${target}`).hostname.toLowerCase();
+    for (const pattern of scope.inScope) {
+      const p = pattern.toLowerCase();
+      if (p === host) return host;
+      if (p.startsWith('*.') && (host === p.slice(2) || host.endsWith(p.slice(1)))) {
+        return host;
+      }
+    }
+    return host;
+  } catch {
+    return target;
   }
 }
 
@@ -63,6 +83,9 @@ export function draftHackerOneReport(finding: Finding, scope: Scope): BountyRepo
     `- **Score:** ${cvss.score.toFixed(1)} (${cvss.rating})`,
     `- **Vector:** \`${cvss.vector}\``,
     `- **Rationale:** ${cvss.rationale}`,
+    finding.evidenceGrade
+      ? `- **Evidence grade:** ${finding.evidenceGrade} (confidence ${((finding.confidence ?? 0) * 100).toFixed(0)}%)`
+      : '',
     '',
     finding.needsManualReview
       ? '> **Note:** Candidate finding from passive detection — verify before submit.'
@@ -89,13 +112,15 @@ export function draftHackerOneReport(finding: Finding, scope: Scope): BountyRepo
     needsManualReview: finding.needsManualReview,
     fields: {
       'Title': submissionTitle,
-      'Asset': finding.target,
+      'Asset': resolveBountyAsset(finding.target, scope),
       'Asset type': h1AssetType(finding.target),
       'Weakness': finding.cwe ?? 'Other',
       'Severity': cvss.rating,
       'CVSS': `${cvss.score.toFixed(1)} — ${cvss.vector}`,
       'Impact': impact,
       'Remediation': finding.remediation,
+      'Evidence grade': finding.evidenceGrade ?? 'unknown',
+      'Confidence': String(finding.confidence ?? ''),
     },
   };
 }
@@ -190,18 +215,25 @@ export function draftPlatformReport(
   return platform === 'immunefi' ? draftImmunefiReport(finding, scope) : draftHackerOneReport(finding, scope);
 }
 
-/** Build CVSS-prioritized bounty packets for high/critical findings only. */
+/** Build CVSS-prioritized bounty packets for submit-ready high/critical findings. */
 export function buildBountyPackets(
   findings: Finding[],
   scope: Scope,
-  opts: { platform?: BountyPlatform; minScore?: number } = {},
+  opts: { platform?: BountyPlatform; minScore?: number; requireSubmitReady?: boolean } = {},
 ): BountyReportPacket[] {
   const platform: BountyPlatform =
     opts.platform ?? (scope.platform === 'immunefi' ? 'immunefi' : 'hackerone');
   const minScore = opts.minScore ?? 7.0;
+  const requireSubmitReady = opts.requireSubmitReady !== false;
   const eligible = sortByCvss(findings).filter((f) => {
     if (f.severity !== 'high' && f.severity !== 'critical') return false;
-    return estimateCvss(f).score >= minScore;
+    if (estimateCvss(f).score < minScore) return false;
+    if (requireSubmitReady) {
+      // Prefer explicit submitReady; fall back to !needsManualReview for legacy findings.
+      if (f.submitReady === false) return false;
+      if (f.submitReady !== true && f.needsManualReview) return false;
+    }
+    return true;
   });
   return eligible.map((f) => draftPlatformReport(f, scope, platform));
 }

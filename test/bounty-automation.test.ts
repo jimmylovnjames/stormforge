@@ -23,6 +23,7 @@ const immunoScope: Scope = {
 };
 
 function finding(over: Partial<Finding> & Pick<Finding, 'checkId' | 'severity' | 'title'>): Finding {
+  const needsManualReview = over.needsManualReview ?? false;
   return {
     id: over.id ?? 'f1',
     target: over.target ?? 'https://api.acme.com/exec?cmd=id',
@@ -31,10 +32,12 @@ function finding(over: Partial<Finding> & Pick<Finding, 'checkId' | 'severity' |
     reproduction: ['curl ...'],
     remediation: 'fix',
     references: ['https://cwe.mitre.org'],
-    needsManualReview: over.needsManualReview ?? false,
     discoveredAt: new Date().toISOString(),
-    cwe: over.cwe,
+    confidence: 0.9,
+    evidenceGrade: 'canary',
     ...over,
+    needsManualReview,
+    submitReady: over.submitReady ?? !needsManualReview,
   };
 }
 
@@ -101,22 +104,41 @@ describe('Immunefi template', () => {
 });
 
 describe('bounty automation', () => {
-  it('only emits high/critical with CVSS >= 7 and ranks by score', () => {
+  it('only emits submit-ready high/critical with CVSS >= 7 and ranks by score', () => {
     const packets = buildBountyPackets(
       [
-        finding({ checkId: 'security-headers', severity: 'low', title: 'HSTS', id: 'l' }),
-        finding({ checkId: 'xss-injection', severity: 'high', title: 'XSS', id: 'x', cwe: 'CWE-79' }),
+        finding({ checkId: 'security-headers', severity: 'low', title: 'HSTS', id: 'l', submitReady: false }),
+        finding({
+          checkId: 'xss-injection',
+          severity: 'high',
+          title: 'XSS',
+          id: 'x',
+          cwe: 'CWE-79',
+          needsManualReview: false,
+          submitReady: true,
+        }),
         finding({
           checkId: 'command-injection',
           severity: 'critical',
           title: 'RCE',
           id: 'r',
           cwe: 'CWE-78',
+          needsManualReview: false,
+          submitReady: true,
+        }),
+        finding({
+          checkId: 'cors-misconfig',
+          severity: 'high',
+          title: 'CORS candidate',
+          id: 'c',
+          needsManualReview: true,
+          submitReady: false,
         }),
       ],
       h1Scope,
     );
     expect(packets.every((p) => p.cvssScore >= 7)).toBe(true);
+    expect(packets.every((p) => !p.needsManualReview)).toBe(true);
     expect(packets[0]!.cvssScore).toBeGreaterThanOrEqual(packets[1]?.cvssScore ?? 0);
     expect(packets[0]!.title).toContain('RCE');
   });
