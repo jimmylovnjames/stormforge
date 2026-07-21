@@ -16,7 +16,8 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 │  • LLM-powered attack surface planner                        │
 │  • Passive detection (headers, CORS trust bypass, cookies,   │
 │    exposed files, OpenAPI/Swagger, GraphQL introspection,    │
-│    weak CSP, source maps, secrets)                           │
+│    weak CSP, source maps, secrets, OAuth, authz/IDOR,        │
+│    cache deception, subdomain takeover)                      │
 │  • Evolved finding→task fan-out (httpx/nuclei/sqlmap/…)      │
 │  • Task queue (KV-backed leases)                             │
 │  • Findings store + submit-ready report drafter              │

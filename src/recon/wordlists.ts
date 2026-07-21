@@ -57,7 +57,6 @@ export const SENSITIVE_PATHS: string[] = [
   '/static/js/main.js.map',
 ];
 
-// Paths worth probing for CORS / auth behavior (API-ish surfaces).
 export const API_PROBE_PATHS: string[] = [
   '/',
   '/api',
@@ -65,6 +64,35 @@ export const API_PROBE_PATHS: string[] = [
   '/api/v2',
   '/login',
   '/admin',
+  '/admin/dashboard',
   '/user',
   '/account',
+  '/me',
+  '/profile',
+  '/settings',
+  '/dashboard',
+  '/api/v1/me',
+  '/api/me',
+  '/api/v1/user',
+  '/api/v1/users/1',
+  '/api/v1/users/me',
+  '/api/users/1',
+  '/users/1',
+  '/users/me',
+  '/oauth/authorize',
+  '/oauth/callback',
+  '/oauth/token',
+  '/oauth2/authorize',
+  '/.well-known/oauth-authorization-server',
+];
+
+/** Paths useful for cache-deception follow-up (paired with static suffixes). */
+export const CACHE_BAIT_PATHS: string[] = [
+  '/account',
+  '/me',
+  '/profile',
+  '/settings',
+  '/dashboard',
+  '/api/v1/me',
+  '/users/me',
 ];

@@ -11,6 +11,10 @@ import { apiSchemaExposureCheck } from './checks/api-schema-exposure.js';
 import { graphqlIntrospectionCheck } from './checks/graphql-introspection.js';
 import { weakCspCheck } from './checks/weak-csp.js';
 import { sourcemapCheck } from './checks/sourcemap.js';
+import { oauthMisconfigCheck } from './checks/oauth.js';
+import { authAccessCheck } from './checks/auth-access.js';
+import { cacheDeceptionCheck } from './checks/cache-deception.js';
+import { subdomainTakeoverCheck } from './checks/subdomain-takeover.js';
 import { scanSecrets } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -23,6 +27,10 @@ const REGISTRY: Check[] = [
   graphqlIntrospectionCheck,
   weakCspCheck,
   sourcemapCheck,
+  oauthMisconfigCheck,
+  authAccessCheck,
+  cacheDeceptionCheck,
+  subdomainTakeoverCheck,
 ];
 
 export function registerCheck(check: Check): void {

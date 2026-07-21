@@ -369,16 +369,49 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
       }
     }
 
-    if (/cors-misconfig|insecure-cookies|weak-csp/i.test(f.checkId)) {
+    if (/cors-misconfig|insecure-cookies|weak-csp|oauth-misconfig|cache-deception/i.test(f.checkId)) {
       push({
         tool: 'nuclei',
         target: originOf(target) || target,
         args: {
           flags: '-severity critical,high,medium -silent -c 15',
-          templates: 'misconfiguration,exposures',
+          templates: 'misconfiguration,exposures,takeovers',
         },
         timeoutSec: 240,
         rationale: `Misconfig pack after ${f.checkId}`,
+      });
+    }
+
+    if (/subdomain-takeover/i.test(f.checkId)) {
+      push({
+        tool: 'nuclei',
+        target: originOf(target) || target,
+        args: {
+          flags: '-severity critical,high,medium -silent -c 20',
+          templates: 'takeovers,dns,misconfiguration',
+        },
+        timeoutSec: 300,
+        rationale: `Nuclei takeovers after ${f.checkId}`,
+      });
+      push({
+        tool: 'httpx',
+        target: originOf(target) || target,
+        args: { flags: '-silent -status-code -title -tech-detect' },
+        timeoutSec: 90,
+        rationale: `httpx live check on takeover candidate`,
+      });
+    }
+
+    if (/auth-access-control/i.test(f.checkId)) {
+      push({
+        tool: 'nuclei',
+        target: originOf(target) || target,
+        args: {
+          flags: '-severity critical,high,medium -silent -c 15',
+          templates: 'exposures,misconfiguration,token',
+        },
+        timeoutSec: 240,
+        rationale: `Authz follow-up after ${f.checkId}`,
       });
     }
   }

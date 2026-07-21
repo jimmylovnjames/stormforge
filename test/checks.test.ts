@@ -143,6 +143,10 @@ describe('registry', () => {
     expect(ids).toContain('graphql-introspection');
     expect(ids).toContain('weak-csp');
     expect(ids).toContain('sourcemap-exposure');
+    expect(ids).toContain('oauth-misconfig');
+    expect(ids).toContain('auth-access-control');
+    expect(ids).toContain('cache-deception');
+    expect(ids).toContain('subdomain-takeover');
   });
 });
 

@@ -6,7 +6,7 @@
 
 import type { Env, Finding, ProbeResult, ScanReport, ScanRequest } from '../types.js';
 import { HttpClient, RateLimiter } from '../recon/http-client.js';
-import { partitionByScope, hostOf } from '../scope/scope-guard.js';
+import { partitionByScope, hostOf, evaluateScope } from '../scope/scope-guard.js';
 import { SENSITIVE_PATHS, API_PROBE_PATHS } from '../recon/wordlists.js';
 import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN, corsBypassOriginFor } from '../detect/checks/cors.js';
@@ -17,6 +17,12 @@ import {
   buildGraphqlIntrospectionUrl,
   shouldFollowUpGraphqlIntrospection,
 } from '../recon/body-parse.js';
+import {
+  buildCacheDeceptionUrls,
+  shouldProbeCacheDeception,
+} from '../recon/cache-probes.js';
+import { DOH_ENDPOINT, parseDohResponse } from '../recon/takeover.js';
+import type { Scope } from '../types.js';
 
 export interface ScanProgress {
   (event: { phase: string; probed: number; total: number; findings: number }): void;
@@ -100,7 +106,32 @@ export async function runScan(
     });
   }
 
-  // 6. Run detection checks over all probes.
+  // 6. Cache deception path suffixes on sensitive surfaces (cap).
+  const cacheUrls = buildCacheFollowUps(probes, req.scope).slice(0, 10);
+  if (cacheUrls.length) {
+    onProgress?.({ phase: 'cache-deception', probed, total: probed + cacheUrls.length, findings: 0 });
+    await mapWithConcurrency(cacheUrls, Math.min(4, concurrency), async (url) => {
+      const p = await client.probe(url, { headers: { origin: PROBE_ORIGIN } });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+    });
+  }
+
+  // 7. DoH takeover lookups for in-scope hosts (cap).
+  const dohHosts = pickTakeoverHosts(allowed, probes).slice(0, 8);
+  if (dohHosts.length) {
+    onProgress?.({ phase: 'takeover-doh', probed, total: probed + dohHosts.length, findings: 0 });
+    await mapWithConcurrency(dohHosts, Math.min(4, concurrency), async (host) => {
+      const synthetic = await lookupTakeoverDns(host);
+      if (synthetic) {
+        probes.push(synthetic);
+        probed++;
+      }
+    });
+  }
+
+  // 8. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
     const findings = runChecks(probe, { scope: req.scope, siblings: probes });
@@ -109,7 +140,7 @@ export async function runScan(
   const findings = [...dedup.values()];
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 7. Assemble report.
+  // 9. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -163,7 +194,6 @@ function pickCorsBypassTargets(probes: ProbeResult[]): Array<{ url: string; orig
     if (seenHost.has(host)) continue;
     const origin = corsBypassOriginFor(p.url);
     if (!origin) continue;
-    // Prefer API-ish / HTML roots.
     const path = (() => {
       try {
         return new URL(p.url).pathname;
@@ -178,6 +208,82 @@ function pickCorsBypassTargets(probes: ProbeResult[]): Array<{ url: string; orig
     out.push({ url: p.url, origin });
   }
   return out;
+}
+
+function buildCacheFollowUps(probes: ProbeResult[], scope: Scope): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const p of probes) {
+    if (!shouldProbeCacheDeception(p)) continue;
+    for (const u of buildCacheDeceptionUrls(p.finalUrl ?? p.url)) {
+      if (seen.has(u)) continue;
+      if (!evaluateScope(u, scope).allowed) continue;
+      seen.add(u);
+      out.push(u);
+    }
+  }
+  return out;
+}
+
+function pickTakeoverHosts(seedTargets: string[], probes: ProbeResult[]): string[] {
+  const hosts = new Set<string>();
+  for (const t of seedTargets) {
+    try {
+      hosts.add(hostOf(t));
+    } catch {
+      /* skip */
+    }
+  }
+  for (const p of probes) {
+    try {
+      const h = hostOf(p.url);
+      // Prefer non-apex subdomains for takeover signal.
+      if (h.split('.').length >= 3) hosts.add(h);
+    } catch {
+      /* skip */
+    }
+  }
+  return [...hosts];
+}
+
+async function lookupTakeoverDns(host: string): Promise<ProbeResult | null> {
+  try {
+    const url = `${DOH_ENDPOINT}?name=${encodeURIComponent(host)}&type=CNAME`;
+    const res = await fetch(url, {
+      headers: { accept: 'application/dns-json' },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      Status?: number;
+      Answer?: Array<{ type: number; data: string }>;
+    };
+    // Also fetch A if CNAME present — DoH often returns CNAME chain; request A for emptiness.
+    const aUrl = `${DOH_ENDPOINT}?name=${encodeURIComponent(host)}&type=A`;
+    const aRes = await fetch(aUrl, { headers: { accept: 'application/dns-json' } });
+    const aJson = aRes.ok
+      ? ((await aRes.json()) as { Status?: number; Answer?: Array<{ type: number; data: string }> })
+      : { Status: json.Status, Answer: [] };
+
+    const cnameLookup = parseDohResponse(host, json);
+    const aLookup = parseDohResponse(host, aJson);
+    const merged = {
+      host,
+      cname: cnameLookup.cname,
+      aRecords: aLookup.aRecords,
+      nxdomain: aLookup.nxdomain || cnameLookup.nxdomain,
+    };
+
+    return {
+      url: `https://${host}/`,
+      method: 'GET',
+      status: 200,
+      headers: { 'x-stormforge-dns': 'takeover-lookup', 'content-type': 'application/json' },
+      body: JSON.stringify(merged),
+      elapsedMs: 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */
