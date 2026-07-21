@@ -15,6 +15,10 @@ import { planAttackSurface } from './planning/vuln-planner.js';
 import { auditLog, listAuditEvents } from './audit/log.js';
 import { enqueueTasks, leaseBatch } from './tasks/queue.js';
 import { processTaskCompletion } from './tasks/complete-followup.js';
+import { handleOrchestrateMessage } from './orchestrate/handler.js';
+import { buildGrokInstructions } from './orchestrate/commands.js';
+import { MOBILE_HTML } from './orchestrate/mobile-html.js';
+import { buildOpenApi } from './orchestrate/openapi.js';
 
 export { ScanOrchestrator };
 
@@ -26,6 +30,24 @@ export default {
     try {
       if (request.method === 'GET' && pathname === '/') {
         return new Response(DASHBOARD_HTML, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      }
+
+      if (request.method === 'GET' && pathname === '/m') {
+        return new Response(MOBILE_HTML, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      }
+
+      if (request.method === 'GET' && pathname === '/openapi.json') {
+        return json(buildOpenApi(url.origin));
+      }
+
+      if (request.method === 'GET' && pathname === '/api/grok/instructions') {
+        return new Response(buildGrokInstructions(url.origin), {
+          headers: { 'content-type': 'text/plain; charset=utf-8' },
+        });
+      }
+
+      if (request.method === 'POST' && pathname === '/api/orchestrate') {
+        return await handleOrchestrate(request, env, url.origin);
       }
 
       if (request.method === 'POST' && pathname === '/api/scan') {
@@ -100,9 +122,37 @@ export function authenticateExecutor(request: Request, env: Env): boolean {
   return header === secret;
 }
 
-/** Operator actions (plan/dispatch/audit) use the same shared secret. */
+/** Operator actions (plan/dispatch/audit/orchestrate) use the same shared secret. */
 function authenticateOperator(request: Request, env: Env): boolean {
   return authenticateExecutor(request, env);
+}
+
+async function handleOrchestrate(request: Request, env: Env, baseUrl: string): Promise<Response> {
+  if (!authenticateOperator(request, env)) {
+    await auditLog(env, { action: 'auth.failed', detail: 'orchestrate unauthorized' });
+    return json({ ok: false, error: 'Unauthorized — set x-executor-secret' }, 401);
+  }
+
+  let body: { message?: string };
+  try {
+    body = (await request.json()) as { message?: string };
+  } catch {
+    return json({ ok: false, error: 'Invalid JSON body' }, 400);
+  }
+
+  const message = typeof body.message === 'string' ? body.message : '';
+  if (!message.trim()) {
+    return json({ ok: false, error: 'Missing message. Try {"message":"help"}' }, 400);
+  }
+
+  const result = await handleOrchestrateMessage(env, message, {
+    baseUrl,
+    actor: 'grok-mobile',
+  });
+  return json(
+    { ok: result.ok, text: result.text, data: result.data },
+    result.ok ? 200 : result.status || 400,
+  );
 }
 
 async function handleDispatch(request: Request, env: Env): Promise<Response> {

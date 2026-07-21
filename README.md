@@ -39,6 +39,10 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/` | Dashboard |
+| GET | `/m` | Mobile chat UI (Grok companion) |
+| GET | `/openapi.json` | OpenAPI for Grok / xAI tools |
+| GET | `/api/grok/instructions` | Paste-ready Grok project instructions |
+| POST | `/api/orchestrate` | Natural-language orchestrate (auth required) |
 | POST | `/api/scan` | Start passive scan |
 | GET | `/api/scan/:id/status` | Scan progress |
 | POST | `/api/plan-attack` | LLM plans attack surface → dispatches tool tasks |
@@ -49,6 +53,10 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 | GET | `/api/findings/:program` | Stored findings |
 | GET | `/api/report/:program` | Markdown disclosure draft |
 | GET | `/api/audit` | Recent scope/task decisions (auth required) |
+
+### Grok mobile
+
+Paste instructions from `/api/grok/instructions` into a Grok Project, or open `/m` on your phone. See [docs/GROK_MOBILE.md](docs/GROK_MOBILE.md).
 
 ## Quick Start
 
