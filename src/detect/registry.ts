@@ -15,6 +15,8 @@ import { rateLimitCheck } from './checks/rate-limit.js';
 import { xssInjectionCheck } from './checks/xss-injection.js';
 import { ssrfRedirectCheck } from './checks/ssrf-redirect.js';
 import { commandInjectionCheck } from './checks/command-injection.js';
+import { pathTraversalCheck } from './checks/path-traversal.js';
+import { hostHeaderCheck } from './checks/host-header.js';
 import { secretsExposureCheck } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -32,6 +34,8 @@ const REGISTRY: Check[] = [
   xssInjectionCheck,
   ssrfRedirectCheck,
   commandInjectionCheck,
+  pathTraversalCheck,
+  hostHeaderCheck,
 ];
 
 export function registerCheck(check: Check): void {

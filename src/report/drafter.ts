@@ -118,6 +118,12 @@ function impactStatement(f: Finding): string {
   if (f.cwe === 'CWE-78') {
     return 'OS command injection allows attackers to execute system commands on the server, typically leading to full remote code execution and host takeover.';
   }
+  if (f.cwe === 'CWE-22') {
+    return 'Path traversal / LFI lets attackers read sensitive files (credentials, source, keys) and often chains into remote code execution.';
+  }
+  if (f.cwe === 'CWE-644') {
+    return 'Host header injection and cache poisoning can hijack password-reset links, poison CDN caches, and route victims to attacker infrastructure.';
+  }
 
   switch (f.severity) {
     case 'critical':

@@ -201,11 +201,170 @@ function heuristicAttackPlan(targets: string[], scope: Scope): AttackPlan {
     });
   }
 
+  // Phase 8: sqlmap on parameterized seed URLs
+  for (const target of targets) {
+    if (!/[?&]\w+=/.test(target)) continue;
+    tasks.push({
+      tool: 'sqlmap',
+      target: normalizeUrl(target),
+      args: { flags: '--batch --level=1 --risk=1 --random-agent --technique=BEUST' },
+      timeoutSec: 300,
+      rationale: `SQL injection detection on parameterized URL ${target}`,
+    });
+  }
+
   return {
     tasks,
-    rationale: 'Heuristic attack plan: recon → enumerate → scan → fuzz. Covers OWASP Top 10 surface.',
+    rationale:
+      'Autonomous heuristic plan: recon → enumerate → scan → fuzz → sqlmap on params. Covers OWASP Top 10 surface.',
     source: 'heuristic',
   };
+}
+
+/**
+ * Finding-driven follow-up planner — the autonomy core.
+ * Maps passive/executor findings into the next wave of scoped tool tasks
+ * (sqlmap on param URLs, nuclei on high findings, httpx on new hosts, etc.).
+ */
+export function planFollowUpTasks(
+  findings: Array<{
+    checkId: string;
+    severity: string;
+    target: string;
+    title: string;
+    evidence?: string;
+  }>,
+  scope: Scope,
+  opts: { scanId?: string; maxTasks?: number } = {},
+): AttackPlan {
+  const tasks: PlannedTask[] = [];
+  const seen = new Set<string>();
+  const maxTasks = opts.maxTasks ?? 15;
+
+  const push = (t: PlannedTask) => {
+    const key = `${t.tool}|${t.target}|${JSON.stringify(t.args)}`;
+    if (seen.has(key)) return;
+    if (!isTargetInScope(t.target, scope) && t.tool !== 'subfinder') return;
+    // subfinder targets are bare domains
+    if (t.tool === 'subfinder' && !isDomainAllowed(t.target, scope)) return;
+    seen.add(key);
+    tasks.push(t);
+  };
+
+  for (const f of findings) {
+    if (tasks.length >= maxTasks) break;
+    const target = f.target;
+    if (!target) continue;
+
+    // Parameterized URLs → sqlmap
+    if (/[?&]\w+=/.test(target) || /injection|xss|ssrf|sql|command/i.test(f.checkId + f.title)) {
+      if (/[?&]\w+=/.test(target)) {
+        push({
+          tool: 'sqlmap',
+          target,
+          args: { flags: '--batch --level=2 --risk=1 --random-agent' },
+          timeoutSec: 360,
+          rationale: `Follow-up SQLi probe from finding ${f.checkId}: ${f.title}`,
+        });
+      }
+    }
+
+    // High/critical web findings → focused nuclei
+    if (f.severity === 'critical' || f.severity === 'high') {
+      push({
+        tool: 'nuclei',
+        target,
+        args: {
+          flags: '-severity critical,high -silent -c 20',
+          templates: 'cves,vulnerabilities,misconfiguration,exposures',
+        },
+        timeoutSec: 420,
+        rationale: `Nuclei deep-scan after ${f.severity} finding (${f.checkId})`,
+      });
+    }
+
+    // GraphQL / schema → katana + nuclei
+    if (/graphql|api-schema|swagger|openapi/i.test(f.checkId)) {
+      push({
+        tool: 'katana',
+        target,
+        args: { flags: '-silent -d 2 -jc' },
+        timeoutSec: 120,
+        rationale: `Crawl API/GraphQL surface from ${f.checkId}`,
+      });
+    }
+
+    // Secrets / exposed files → gobuster nearby
+    if (/secret|exposed-files|git|env/i.test(f.checkId + f.title)) {
+      const base = originOf(target);
+      if (base) {
+        push({
+          tool: 'gobuster',
+          target: base,
+          args: {
+            mode: 'dir',
+            flags: '-q --no-error -t 15',
+            wordlist: '/usr/share/wordlists/dirb/common.txt',
+          },
+          timeoutSec: 240,
+          rationale: `Dirbust after secret/exposure finding on ${base}`,
+        });
+      }
+    }
+
+    // New hostnames in evidence → httpx
+    const hosts = extractHostsFromText(`${f.target}\n${f.evidence ?? ''}`);
+    for (const host of hosts) {
+      if (tasks.length >= maxTasks) break;
+      push({
+        tool: 'httpx',
+        target: `https://${host}`,
+        args: { flags: '-silent -status-code -title -tech-detect' },
+        timeoutSec: 60,
+        rationale: `Probe host discovered via finding ${f.checkId}`,
+      });
+    }
+  }
+
+  return {
+    tasks: tasks.slice(0, maxTasks),
+    rationale: `Autonomous follow-up wave from ${findings.length} finding(s) → ${Math.min(tasks.length, maxTasks)} tasks`,
+    source: 'heuristic',
+  };
+}
+
+function isDomainAllowed(domain: string, scope: Scope): boolean {
+  const d = domain.toLowerCase();
+  for (const oos of scope.outOfScope) {
+    if (d === oos.toLowerCase() || (oos.startsWith('*.') && d.endsWith(oos.slice(1)))) return false;
+  }
+  for (const pattern of scope.inScope) {
+    const p = pattern.toLowerCase();
+    if (p === d) return true;
+    if (p.startsWith('*.') && (d === p.slice(2) || d.endsWith(p.slice(1)))) return true;
+    if (!p.startsWith('*.') && d.endsWith(`.${p}`)) return true;
+  }
+  return false;
+}
+
+function originOf(target: string): string | null {
+  try {
+    const u = new URL(target.includes('://') ? target : `https://${target}`);
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+function extractHostsFromText(text: string): string[] {
+  const out = new Set<string>();
+  const re = /\b([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const h = m[1].toLowerCase();
+    if (h.includes('.') && !h.endsWith('.example') && !h.endsWith('.local')) out.add(h);
+  }
+  return [...out].slice(0, 10);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

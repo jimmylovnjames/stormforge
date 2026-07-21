@@ -28,10 +28,19 @@ import {
   buildCommandInjectionProbeUrls,
   shouldProbeCommandInjection,
 } from '../recon/command-probes.js';
+import {
+  LFI_PATHS,
+  buildPathTraversalProbeUrls,
+  shouldProbePathTraversal,
+} from '../recon/path-traversal-probes.js';
+import {
+  buildHostHeaderVariants,
+  shouldProbeHostHeader,
+} from '../recon/host-header-probes.js';
 import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
-import { planNextPaths } from '../planning/llm-planner.js';
+import { planNextPaths, planPathsFromFindings } from '../planning/llm-planner.js';
 
 export interface ScanProgress {
   (event: { phase: string; probed: number; total: number; findings: number }): void;
@@ -164,16 +173,83 @@ export async function runScan(
     });
   }
 
-  // 8. Run detection checks over all probes.
+  // 8. Path traversal / LFI canaries.
+  const lfiUrls = collectPathTraversalFollowUps(probes);
+  const { allowed: allowedLfi } = partitionByScope(lfiUrls, req.scope);
+  const freshLfi = allowedLfi.filter((u) => !probes.some((p) => p.url === u));
+  if (freshLfi.length) {
+    await mapWithConcurrency(freshLfi, concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'text/plain, text/html, application/octet-stream;q=0.8, */*;q=0.5' },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'path-traversal-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 9. Host / X-Forwarded-Host poisoning probes on a few live roots.
+  const hostVariants = collectHostHeaderFollowUps(probes);
+  const { allowed: allowedHostUrls } = partitionByScope(
+    hostVariants.map((h) => h.url),
+    req.scope,
+  );
+  const allowedHostSet = new Set(allowedHostUrls);
+  const freshHost = hostVariants.filter((h) => allowedHostSet.has(h.url));
+  if (freshHost.length) {
+    await mapWithConcurrency(freshHost, concurrency, async (item) => {
+      const p = await client.probe(item.url, {
+        headers: { origin: PROBE_ORIGIN, ...item.headers },
+        redirect: false,
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'host-header-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 10. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
-    const findings = runChecks(probe, { scope: req.scope, siblings: probes });
-    for (const f of findings) dedup.set(f.id, f);
+    for (const f of runChecks(probe, { scope: req.scope, siblings: probes })) {
+      dedup.set(f.id, f);
+    }
   }
-  const findings = [...dedup.values()];
+
+  // 11. Autonomy second pass: findings → more paths → probe → re-check.
+  let findings = [...dedup.values()];
+  const fromFindings = planPathsFromFindings(findings);
+  if (fromFindings.suggestedPaths.length) {
+    const extraUrls = buildProbeUrls(allowed, fromFindings.suggestedPaths);
+    const { allowed: allowedExtra2 } = partitionByScope(extraUrls, req.scope);
+    const fresh2 = allowedExtra2.filter((u) => !probes.some((p) => p.url === u)).slice(0, 40);
+    if (fresh2.length) {
+      await mapWithConcurrency(fresh2, concurrency, async (url) => {
+        const p = await client.probe(url, { headers: { origin: PROBE_ORIGIN } });
+        attachSignals(p);
+        probes.push(p);
+        probed++;
+        onProgress?.({
+          phase: 'finding-driven-pass',
+          probed,
+          total: probes.length,
+          findings: findings.length,
+        });
+      });
+      for (const probe of probes.slice(-fresh2.length)) {
+        for (const f of runChecks(probe, { scope: req.scope, siblings: probes })) {
+          dedup.set(f.id, f);
+        }
+      }
+      findings = [...dedup.values()];
+    }
+  }
+
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 9. Assemble report.
+  // 12. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -310,6 +386,67 @@ export function collectCommandInjectionFollowUps(probes: ProbeResult[]): string[
   return [...out];
 }
 
+export function collectPathTraversalFollowUps(probes: ProbeResult[]): string[] {
+  const out = new Set<string>();
+  let budget = 16;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbePathTraversal(p)) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    for (const url of buildPathTraversalProbeUrls(cleanBase, 2)) {
+      if (budget <= 0) break;
+      out.add(url);
+      budget--;
+    }
+  }
+  return [...out];
+}
+
+export function collectHostHeaderFollowUps(
+  probes: ProbeResult[],
+): Array<{ url: string; headers: Record<string, string>; kind: string }> {
+  const out: Array<{ url: string; headers: Record<string, string>; kind: string }> = [];
+  const seen = new Set<string>();
+  let budget = 12;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeHostHeader(p)) continue;
+    // Prefer site roots and login pages.
+    let path = '/';
+    try {
+      path = new URL(p.url).pathname;
+    } catch {
+      /* keep */
+    }
+    if (!(path === '/' || path === '/login' || path === '/api' || path.endsWith('/'))) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      u.pathname = path === '/api' ? '/api' : '/';
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    for (const variant of buildHostHeaderVariants(cleanBase)) {
+      const key = `${variant.kind}|${variant.url}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(variant);
+      budget--;
+      if (budget <= 0) break;
+    }
+  }
+  return out;
+}
+
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */
 function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
   const urls = new Set<string>();
@@ -320,6 +457,7 @@ function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
     ...REFLECTION_PATHS,
     ...REDIRECT_SSRF_PATHS,
     ...CMD_EXEC_PATHS,
+    ...LFI_PATHS,
     ...SECRET_LEAK_PATHS,
     ...SENSITIVE_PATHS,
     ...extraPaths,

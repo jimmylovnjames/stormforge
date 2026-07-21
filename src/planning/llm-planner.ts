@@ -176,3 +176,56 @@ export function summarizeFindings(findings: Finding[]): string {
   const needsReview = findings.some(f => f.needsManualReview);
   return `StormForge found ${findings.length} issue(s): ${parts.join(', ')}.${needsReview ? ' Some need manual verification.' : ''}`.trim();
 }
+
+/**
+ * Finding-driven path suggestions for a second passive scan pass.
+ * Turns check hits into the next high-signal paths to probe.
+ */
+export function planPathsFromFindings(findings: Finding[]): PlannerSuggestion {
+  const paths: string[] = [];
+  for (const f of findings) {
+    switch (f.checkId) {
+      case 'graphql-introspection':
+      case 'api-schema-exposure':
+        paths.push('/graphql', '/api/graphql', '/graphiql', '/v1/graphql', '/swagger.json', '/openapi.json');
+        break;
+      case 'auth-access-control':
+      case 'weak-jwt':
+        paths.push('/api/v1/users/1', '/api/v1/users/2', '/api/v1/me', '/admin/users', '/api/v1/accounts/1', '/admin', '/dashboard');
+        break;
+      case 'secret-exposure':
+      case 'exposed-files':
+        paths.push('/.env', '/.env.backup', '/config.json', '/.aws/credentials', '/backup.sql', '/.git/config');
+        break;
+      case 'xss-injection':
+      case 'command-injection':
+      case 'ssrf-open-redirect':
+        try {
+          const u = new URL(f.target);
+          if (u.pathname && u.pathname !== '/') paths.push(u.pathname);
+        } catch {
+          /* ignore */
+        }
+        paths.push('/search', '/redirect', '/proxy', '/ping', '/exec');
+        break;
+      case 'path-traversal':
+        paths.push('/download', '/file', '/static', '/api/file', '/view', '/include', '/page');
+        break;
+      case 'host-header-injection':
+        paths.push('/', '/login', '/reset-password', '/account', '/forgot-password');
+        break;
+      case 'rate-limit-missing':
+        paths.push('/login', '/api/v1/login', '/oauth/token', '/otp');
+        break;
+      default:
+        break;
+    }
+  }
+  const suggested = [...new Set(paths)].filter((p) => p.startsWith('/')).slice(0, 30);
+  return {
+    suggestedPaths: suggested,
+    rationale: `Second-pass paths derived from ${findings.length} finding(s) across ${new Set(findings.map((f) => f.checkId)).size} check class(es)`,
+    source: 'evolved',
+  };
+}
+
