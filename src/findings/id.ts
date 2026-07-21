@@ -3,6 +3,8 @@
 // Two runs that discover the same issue on the same asset with the same
 // evidence must produce the same id, so the store can dedupe across scans.
 
+import { canonicalTarget, stableEvidenceKey } from './canonicalize.js';
+
 /** Deterministic short hash (FNV-1a 32-bit) rendered as hex. */
 export function fnv1a(input: string): string {
   let hash = 0x811c9dc5;
@@ -15,5 +17,7 @@ export function fnv1a(input: string): string {
 }
 
 export function makeFindingId(checkId: string, target: string, evidenceKey: string): string {
-  return `${checkId}-${fnv1a(`${checkId}|${target}|${evidenceKey}`)}`;
+  const canon = canonicalTarget(target);
+  const evidence = stableEvidenceKey(evidenceKey);
+  return `${checkId}-${fnv1a(`${checkId}|${canon}|${evidence}`)}`;
 }

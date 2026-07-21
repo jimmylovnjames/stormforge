@@ -1,6 +1,7 @@
 // Confidence scoring — gates bounty drafts so only high-signal findings ship.
 
 import type { Finding } from '../types.js';
+import { canonicalTarget } from './canonicalize.js';
 
 export type EvidenceGrade = NonNullable<Finding['evidenceGrade']>;
 
@@ -186,7 +187,8 @@ function hostOf(url: string): string {
 
 function pathOf(url: string): string {
   try {
-    return new URL(url.includes('://') ? url : `https://${url}`).pathname;
+    const u = new URL(canonicalTarget(url.includes('://') ? url : `https://${url}`));
+    return u.pathname;
   } catch {
     return '/';
   }

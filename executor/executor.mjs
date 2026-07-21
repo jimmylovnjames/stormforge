@@ -182,7 +182,31 @@ async function executeTask(task) {
 // ─── Output Parsers ──────────────────────────────────────────────────────────
 
 function makeFindingId(checkId, target, evidence) {
-  return createHash('sha256').update(`${checkId}:${target}:${evidence}`).digest('hex').slice(0, 16);
+  const canon = canonicalizeTarget(target);
+  return createHash('sha256').update(`${checkId}:${canon}:${String(evidence).trim().toLowerCase()}`).digest('hex').slice(0, 16);
+}
+
+function canonicalizeTarget(target) {
+  try {
+    let raw = String(target || '').trim();
+    if (!raw) return '';
+    if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
+    const u = new URL(raw);
+    u.hash = '';
+    u.hostname = u.hostname.toLowerCase();
+    if (u.pathname.length > 1 && u.pathname.endsWith('/')) u.pathname = u.pathname.replace(/\/+$/, '');
+    const kept = [];
+    for (const [k, v] of u.searchParams) {
+      if (/canary|sfhpp|sfpp|sfcp/i.test(v)) continue;
+      kept.push([k, v]);
+    }
+    kept.sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
+    u.search = '';
+    for (const [k, v] of kept) u.searchParams.append(k, v);
+    return u.toString();
+  } catch {
+    return String(target || '').toLowerCase();
+  }
 }
 
 function parseNmapOutput(stdout, task) {

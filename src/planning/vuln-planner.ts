@@ -9,6 +9,8 @@
 // It does not execute anything — execution is the executor's job.
 
 import type { Env, Scope, ToolName } from '../types.js';
+import { nucleiArgsForTech, productsFromFindingText } from './tech-templates.js';
+import { parseSubdomains, rankSubdomains } from '../recon/subdomain-intel.js';
 
 export interface PlannedTask {
   tool: ToolName;
@@ -275,18 +277,38 @@ export function planFollowUpTasks(
       }
     }
 
-    // High/critical web findings → focused nuclei
+    // High/critical web findings → focused nuclei (tech-tagged when possible)
     if (f.severity === 'critical' || f.severity === 'high') {
+      const products = productsFromFindingText(f.title, f.evidence, f.checkId);
+      const tech = nucleiArgsForTech(products);
       push({
         tool: 'nuclei',
         target,
         args: {
-          flags: '-severity critical,high -silent -c 20',
-          templates: 'cves,vulnerabilities,misconfiguration,exposures',
+          flags: tech.flags,
+          templates: tech.templates,
         },
         timeoutSec: 420,
         rationale: `Nuclei deep-scan after ${f.severity} finding (${f.checkId})`,
       });
+    }
+
+    // httpx tech detect → product-tagged nuclei
+    if (/httpx-tech|version-cve|fingerprint/i.test(f.checkId)) {
+      const products = productsFromFindingText(f.title, f.evidence);
+      if (products.length) {
+        const tech = nucleiArgsForTech(products);
+        push({
+          tool: 'nuclei',
+          target,
+          args: {
+            flags: tech.flags,
+            templates: tech.templates,
+          },
+          timeoutSec: 420,
+          rationale: `Tech-tagged nuclei for ${products.slice(0, 4).join(', ')}`,
+        });
+      }
     }
 
     // GraphQL / schema → katana + nuclei
@@ -392,31 +414,64 @@ export function planFollowUpTasks(
       });
     }
 
-    // Subdomain enum / takeover → nuclei takeover templates
+    // Subdomain enum / takeover → ranked httpx + takeover nuclei
     if (/subdomain-takeover|subfinder|recon-subfinder/i.test(f.checkId)) {
-      push({
-        tool: 'nuclei',
-        target,
-        args: {
-          flags: '-silent -c 20',
-          templates: 'http/takeovers,takeovers',
-        },
-        timeoutSec: 300,
-        rationale: `Nuclei takeover templates after ${f.checkId}`,
-      });
+      const hostTarget = extractHost(f.target);
+      const parts = hostTarget.split('.');
+      const apex = parts.length >= 2 ? parts.slice(-2).join('.') : hostTarget;
+      const hosts = rankSubdomains(
+        parseSubdomains(`${f.target}\n${f.evidence ?? ''}`, apex),
+        6,
+      );
+      for (const host of hosts) {
+        if (tasks.length >= maxTasks) break;
+        if (!isDomainAllowed(host, scope)) continue;
+        push({
+          tool: 'httpx',
+          target: `https://${host}`,
+          args: { flags: '-silent -status-code -title -tech-detect' },
+          timeoutSec: 60,
+          rationale: `Ranked subdomain probe (${host}) from ${f.checkId}`,
+        });
+        push({
+          tool: 'nuclei',
+          target: `https://${host}`,
+          args: {
+            flags: '-silent -c 20',
+            templates: 'http/takeovers,takeovers',
+          },
+          timeoutSec: 240,
+          rationale: `Takeover templates for ranked host ${host}`,
+        });
+      }
+      // Also keep a takeover pass on the original target when it is a URL/host.
+      if (/^https?:\/\//i.test(target) || target.includes('.')) {
+        push({
+          tool: 'nuclei',
+          target: target.includes('://') ? target : `https://${target}`,
+          args: {
+            flags: '-silent -c 20',
+            templates: 'http/takeovers,takeovers',
+          },
+          timeoutSec: 300,
+          rationale: `Nuclei takeover templates after ${f.checkId}`,
+        });
+      }
     }
 
-    // New hostnames in evidence → httpx
-    const hosts = extractHostsFromText(`${f.target}\n${f.evidence ?? ''}`);
-    for (const host of hosts) {
-      if (tasks.length >= maxTasks) break;
-      push({
-        tool: 'httpx',
-        target: `https://${host}`,
-        args: { flags: '-silent -status-code -title -tech-detect' },
-        timeoutSec: 60,
-        rationale: `Probe host discovered via finding ${f.checkId}`,
-      });
+    // New hostnames in evidence → httpx (skip if already handled by subdomain ranking)
+    if (!/subfinder|recon-subfinder/i.test(f.checkId)) {
+      const hosts = extractHostsFromText(`${f.target}\n${f.evidence ?? ''}`);
+      for (const host of hosts) {
+        if (tasks.length >= maxTasks) break;
+        push({
+          tool: 'httpx',
+          target: `https://${host}`,
+          args: { flags: '-silent -status-code -title -tech-detect' },
+          timeoutSec: 60,
+          rationale: `Probe host discovered via finding ${f.checkId}`,
+        });
+      }
     }
   }
 
