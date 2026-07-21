@@ -6,6 +6,7 @@
 
 import type { Env, Finding, Scope, ToolName } from '../types.js';
 import { evaluateScope } from '../scope/scope-guard.js';
+import { cvssFor } from '../report/cvss.js';
 
 export interface PlannedTask {
   tool: ToolName;
@@ -226,21 +227,42 @@ export function heuristicAttackPlan(targets: string[], scope: Scope): AttackPlan
   };
 }
 
+/** Hard cap on evolved tasks per planning pass (keeps task volume bounded). */
+export const MAX_EVOLVED_TASKS = 12;
+/** Per-finding host fan-out cap (subfinder / katana → httpx). */
+const HOST_FANOUT_CAP = 8;
+/** Per-finding parameterized-URL fan-out cap (katana → sqlmap). */
+const PARAM_URL_CAP = 4;
+
 /**
- * Turn prior findings into the next high-leverage executor tasks
- * (tech-tagged nuclei, per-host httpx from subfinder, katana URLs → sqlmap,
- * schema/graphql packs, takeover tags).
+ * Turn prior findings into the next high-leverage executor tasks. Every emitted
+ * task carries source context (srcCheck, srcSeverity, param, cvss vector for
+ * high/critical) so executor parsers, the report drafter, and the audit trail
+ * keep provenance. Fan-out (each capped; total capped at MAX_EVOLVED_TASKS):
+ *
+ *  - tech fingerprint / known CVE   → tech-tagged nuclei
+ *  - subfinder aggregate            → scoped httpx per host + takeover nuclei
+ *  - katana aggregate               → scoped httpx per discovered host + param sqlmap
+ *  - api-schema / swagger / graphql → katana crawl + nuclei exposures,graphql,swagger
+ *  - secret leak                    → secret-confirmation nuclei (exposures,tokens)
+ *  - exposed file / bucket / map    → dir-scoped ffuf + nuclei exposures,misconfiguration
+ *  - parameterized target           → sqlmap (detection-only)
+ *  - cors/cookie/csp/oauth/cache    → misconfig nuclei
+ *  - subdomain-takeover             → takeover nuclei + httpx liveness
+ *  - auth-access-control            → authz nuclei
  */
 export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan {
   const tasks: PlannedTask[] = [];
   const seen = new Set<string>();
 
-  const push = (t: PlannedTask) => {
-    if (!evaluateScope(t.target, scope).allowed) return;
+  const push = (t: PlannedTask): boolean => {
+    if (tasks.length >= MAX_EVOLVED_TASKS) return false;
+    if (!evaluateScope(t.target, scope).allowed) return false;
     const key = `${t.tool}|${t.target}|${t.args.templates ?? ''}|${t.args.flags ?? ''}`;
-    if (seen.has(key)) return;
+    if (seen.has(key)) return false;
     seen.add(key);
     tasks.push(t);
+    return true;
   };
 
   const ordered = [...findings].sort(
@@ -248,168 +270,159 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
   );
 
   for (const f of ordered) {
-    if (tasks.length >= 12) break;
+    if (tasks.length >= MAX_EVOLVED_TASKS) break;
     const target = f.target;
     if (!target) continue;
+    const id = f.checkId.toLowerCase();
     const blob = `${f.checkId}\n${f.title}\n${f.evidence}\n${f.description}`;
+    const origin = originOf(target) || target;
+    const ctx = findingContext(f);
 
-    if (/httpx-tech|version-cve|fingerprint/i.test(f.checkId)) {
-      const templates = nucleiTemplatesFromText(blob);
+    // 1. Tech fingerprint / known CVE → tech-tagged nuclei.
+    if (/httpx-tech|known-cve|version-cve|fingerprint/.test(id)) {
       push({
         tool: 'nuclei',
         target,
-        args: {
-          flags: '-severity critical,high,medium -silent -c 25',
-          templates,
-        },
+        args: { flags: '-severity critical,high,medium -silent -c 25', templates: nucleiTemplatesFromText(blob), ...ctx },
         timeoutSec: 420,
         rationale: `Tech-tagged nuclei after ${f.checkId}`,
       });
     }
 
-    // Subfinder aggregate → per-host httpx + takeover nuclei (cap)
-    if (/subfinder/i.test(f.checkId)) {
-      const hosts = extractHostsFromText(blob).slice(0, 8);
+    // 2. Subfinder aggregate → scoped httpx per host + takeover nuclei.
+    if (/subfinder/.test(id)) {
+      const hosts = extractHostsFromText(blob).slice(0, HOST_FANOUT_CAP);
       for (const host of hosts) {
-        if (tasks.length >= 12) break;
+        if (tasks.length >= MAX_EVOLVED_TASKS) break;
         const url = host.includes('://') ? host : `https://${host}`;
-        if (!evaluateScope(url, scope).allowed) continue;
         push({
           tool: 'httpx',
           target: url,
-          args: { flags: '-silent -status-code -title -tech-detect' },
+          args: { flags: '-silent -status-code -title -tech-detect', ...ctx },
           timeoutSec: 90,
           rationale: `httpx live check from subfinder host ${host}`,
         });
       }
-      if (hosts.length) {
+      const first = hosts[0];
+      if (first) {
         push({
           tool: 'nuclei',
-          target: hosts[0]!.includes('://') ? hosts[0]! : `https://${hosts[0]}`,
-          args: {
-            flags: '-severity critical,high,medium -silent -c 20',
-            templates: 'takeovers,dns,misconfiguration',
-          },
+          target: first.includes('://') ? first : `https://${first}`,
+          args: { flags: '-severity critical,high,medium -silent -c 20', templates: 'takeovers,dns,misconfiguration', ...ctx },
           timeoutSec: 300,
           rationale: 'Nuclei takeovers after subdomain enum',
         });
       }
     }
 
-    if (/graphql|api-schema|swagger|openapi|katana/i.test(f.checkId)) {
+    // 3. Katana aggregate → scoped httpx per discovered host + param sqlmap.
+    if (/katana/.test(id)) {
+      const urls = extractUrlsFromText(blob);
+      for (const host of uniqueHosts(urls).slice(0, HOST_FANOUT_CAP)) {
+        if (tasks.length >= MAX_EVOLVED_TASKS) break;
+        push({
+          tool: 'httpx',
+          target: `https://${host}`,
+          args: { flags: '-silent -status-code -title -tech-detect', ...ctx },
+          timeoutSec: 90,
+          rationale: `httpx live check on katana host ${host}`,
+        });
+      }
+      for (const u of urls.filter((x) => /[?&]\w+=/.test(x)).slice(0, PARAM_URL_CAP)) {
+        if (tasks.length >= MAX_EVOLVED_TASKS) break;
+        push(sqlmapTask(u, ctx, `sqlmap on katana param URL`));
+      }
+    }
+
+    // 4. Exposed API schema / docs / GraphQL → crawl + exposures,graphql,swagger nuclei.
+    if (/api-schema|swagger|openapi|graphql/.test(id)) {
       push({
         tool: 'katana',
         target,
-        args: { flags: '-silent -d 2 -jc' },
+        args: { flags: '-silent -d 2 -jc', ...ctx },
         timeoutSec: 120,
         rationale: `Crawl API surface from ${f.checkId}`,
       });
+      const templates = /graphql/.test(id) ? 'graphql,exposures,swagger,misconfiguration' : 'swagger,graphql,exposures,misconfiguration';
       push({
         tool: 'nuclei',
         target,
-        args: {
-          flags: '-severity critical,high,medium -silent -c 20',
-          templates: 'exposures,misconfiguration,graphql,swagger',
-        },
+        args: { flags: '-severity critical,high,medium -silent -c 20', templates, path: safePathOf(target), ...ctx },
         timeoutSec: 360,
-        rationale: `Nuclei exposures on schema/API surface`,
+        rationale: `Nuclei exposures on schema/API surface (${templates})`,
       });
     }
 
-    // Katana interesting URLs with params → sqlmap (capped)
-    if (/katana/i.test(f.checkId)) {
-      const urls = extractUrlsFromText(blob).filter((u) => /[?&]\w+=/.test(u)).slice(0, 4);
-      for (const u of urls) {
-        if (tasks.length >= 12) break;
-        push({
-          tool: 'sqlmap',
-          target: u,
-          args: { flags: '--batch --level=2 --risk=1 --random-agent' },
-          timeoutSec: 360,
-          rationale: `sqlmap on katana param URL`,
-        });
-      }
-    }
-
-    if (/[?&]\w+=/.test(target) || /sql|injection|xss|ssrf/i.test(f.checkId + f.title)) {
-      if (/[?&]\w+=/.test(target)) {
-        push({
-          tool: 'sqlmap',
-          target,
-          args: { flags: '--batch --level=2 --risk=1 --random-agent' },
-          timeoutSec: 360,
-          rationale: `sqlmap follow-up from ${f.checkId}`,
-        });
-      }
-    }
-
-    if (/secret|exposed|bucket|git|env|sourcemap|actuator/i.test(f.checkId + f.title)) {
-      const origin = originOf(target);
-      if (origin) {
-        push({
-          tool: 'ffuf',
-          target: `${origin}/FUZZ`,
-          args: {
-            flags: '-mc 200,301,302,403 -t 20 -ac',
-            wordlist: '/usr/share/wordlists/dirb/common.txt',
-          },
-          timeoutSec: 180,
-          rationale: `Fuzz near disclosure from ${f.checkId}`,
-        });
-        push({
-          tool: 'nuclei',
-          target: origin,
-          args: {
-            flags: '-severity critical,high,medium -silent -c 20',
-            templates: 'exposures,misconfiguration,tokens',
-          },
-          timeoutSec: 300,
-          rationale: `Nuclei exposures near ${f.checkId}`,
-        });
-      }
-    }
-
-    if (/cors-misconfig|insecure-cookies|weak-csp|oauth-misconfig|cache-deception/i.test(f.checkId)) {
+    // 5. Secret leak → secret-confirmation nuclei (tokens + exposures) on origin.
+    if (/secret-exposure/.test(id)) {
       push({
         tool: 'nuclei',
-        target: originOf(target) || target,
-        args: {
-          flags: '-severity critical,high,medium -silent -c 15',
-          templates: 'misconfiguration,exposures,takeovers',
-        },
+        target: origin,
+        args: { flags: '-severity critical,high,medium -silent -c 20', templates: 'exposures,tokens,misconfiguration', ...ctx },
+        timeoutSec: 300,
+        rationale: `Secret-confirmation nuclei after ${f.checkId}`,
+      });
+    }
+
+    // 6. Exposed file / bucket / sourcemap → dir-scoped ffuf + exposures nuclei.
+    if (/exposed-files|sourcemap-exposure|open-cloud-bucket/.test(id)) {
+      const fuzzBase = dirFuzzBase(target) || origin;
+      push({
+        tool: 'ffuf',
+        target: `${fuzzBase}/FUZZ`,
+        args: { flags: '-mc 200,301,302,403 -t 20 -ac', wordlist: '/usr/share/wordlists/dirb/common.txt', ...ctx },
+        timeoutSec: 180,
+        rationale: `Fuzz near disclosure from ${f.checkId}`,
+      });
+      push({
+        tool: 'nuclei',
+        target: origin,
+        args: { flags: '-severity critical,high,medium -silent -c 20', templates: 'exposures,misconfiguration,tokens', ...ctx },
+        timeoutSec: 300,
+        rationale: `Nuclei exposures near ${f.checkId}`,
+      });
+    }
+
+    // 7. Parameterized target itself → sqlmap (detection-only).
+    if (/[?&]\w+=/.test(target)) {
+      push(sqlmapTask(target, ctx, `sqlmap follow-up from ${f.checkId}`));
+    }
+
+    // 8. Header / cookie / CSP / OAuth / cache misconfig → misconfig nuclei.
+    if (/cors-misconfig|insecure-cookies|weak-csp|oauth-misconfig|cache-deception/.test(id)) {
+      push({
+        tool: 'nuclei',
+        target: origin,
+        args: { flags: '-severity critical,high,medium -silent -c 15', templates: 'misconfiguration,exposures,takeovers', ...ctx },
         timeoutSec: 240,
         rationale: `Misconfig pack after ${f.checkId}`,
       });
     }
 
-    if (/subdomain-takeover/i.test(f.checkId)) {
+    // 9. Subdomain takeover → takeover nuclei + httpx liveness.
+    if (/subdomain-takeover/.test(id)) {
       push({
         tool: 'nuclei',
-        target: originOf(target) || target,
-        args: {
-          flags: '-severity critical,high,medium -silent -c 20',
-          templates: 'takeovers,dns,misconfiguration',
-        },
+        target: origin,
+        args: { flags: '-severity critical,high,medium -silent -c 20', templates: 'takeovers,dns,misconfiguration', ...ctx },
         timeoutSec: 300,
         rationale: `Nuclei takeovers after ${f.checkId}`,
       });
       push({
         tool: 'httpx',
-        target: originOf(target) || target,
-        args: { flags: '-silent -status-code -title -tech-detect' },
+        target: origin,
+        args: { flags: '-silent -status-code -title -tech-detect', ...ctx },
         timeoutSec: 90,
         rationale: `httpx live check on takeover candidate`,
       });
     }
 
-    if (/auth-access-control/i.test(f.checkId)) {
+    // 10. Auth bypass / IDOR → authz-focused nuclei.
+    if (/auth-access-control/.test(id)) {
       push({
         tool: 'nuclei',
-        target: originOf(target) || target,
-        args: {
-          flags: '-severity critical,high,medium -silent -c 15',
-          templates: 'exposures,misconfiguration,token',
-        },
+        target: origin,
+        args: { flags: '-severity critical,high,medium -silent -c 15', templates: 'exposures,misconfiguration,token', ...ctx },
         timeoutSec: 240,
         rationale: `Authz follow-up after ${f.checkId}`,
       });
@@ -417,10 +430,86 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
   }
 
   return {
-    tasks: sanitizeTasks(tasks, scope).slice(0, 12),
+    tasks: sanitizeTasks(tasks, scope).slice(0, MAX_EVOLVED_TASKS),
     rationale: `Evolved plan from ${findings.length} finding(s)`,
     source: 'evolved',
   };
+}
+
+/** Build a detection-only sqlmap task, passing discovered params via `-p`. */
+function sqlmapTask(url: string, ctx: Record<string, string>, rationale: string): PlannedTask {
+  const params = paramNamesOf(url);
+  return {
+    tool: 'sqlmap',
+    target: url,
+    args: {
+      flags: `--batch --level=2 --risk=1 --random-agent${params ? ` -p ${params}` : ''}`,
+      ...(params ? { param: params } : {}),
+      ...ctx,
+    },
+    timeoutSec: 360,
+    rationale: params ? `${rationale} (params: ${params})` : rationale,
+  };
+}
+
+/**
+ * Source-provenance args attached to every evolved task so executor parsers,
+ * the report drafter, and audit keep the originating finding + CVSS.
+ */
+function findingContext(f: Finding): Record<string, string> {
+  const ctx: Record<string, string> = { srcCheck: f.checkId, srcSeverity: f.severity };
+  if (f.severity === 'high' || f.severity === 'critical') {
+    ctx.cvss = cvssFor(f).vector;
+  }
+  return ctx;
+}
+
+/** Comma-joined, de-duplicated query parameter names from a URL. */
+export function paramNamesOf(url: string): string {
+  try {
+    const u = new URL(url.includes('://') ? url : `https://${url}`);
+    return [...new Set([...u.searchParams.keys()])].filter(Boolean).slice(0, 10).join(',');
+  } catch {
+    const out: string[] = [];
+    const re = /[?&]([\w.\-[\]]+)=/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(url)) !== null) if (m[1] && !out.includes(m[1])) out.push(m[1]);
+    return out.slice(0, 10).join(',');
+  }
+}
+
+/** Distinct lower-cased hostnames parsed from a list of absolute URLs. */
+function uniqueHosts(urls: string[]): string[] {
+  const set = new Set<string>();
+  for (const u of urls) {
+    try {
+      set.add(new URL(u).hostname.toLowerCase());
+    } catch {
+      /* skip non-URL token */
+    }
+  }
+  return [...set];
+}
+
+function safePathOf(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return '/';
+  }
+}
+
+/** Origin + containing directory of a URL, for disclosure-adjacent fuzzing. */
+function dirFuzzBase(url: string): string | null {
+  try {
+    const u = new URL(url.includes('://') ? url : `https://${url}`);
+    const path = u.pathname;
+    const dir = path.endsWith('/') ? path : path.slice(0, path.lastIndexOf('/') + 1);
+    const clean = dir && dir !== '/' ? dir.replace(/\/$/, '') : '';
+    return `${u.origin}${clean}`;
+  } catch {
+    return null;
+  }
 }
 
 export function nucleiTemplatesFromText(text: string): string {
