@@ -1,23 +1,19 @@
 // StormForge C2 — Cloudflare Worker entry point.
 //
-// This Worker serves as the Command & Control brain:
-// - Dashboard UI
-// - Passive scan orchestration (existing)
-// - Task queue for remote executor (NEW): /api/tasks/*
-// - LLM-driven vuln planning
-//
-// The Worker NEVER runs offensive tools itself. It dispatches ToolTasks to
-// a remote Node.js executor that polls /api/tasks/poll and submits results
-// back via /api/tasks/complete.
+// Command & Control brain: dashboard, passive scans, task queue for remote
+// executor, LLM-driven vuln planning. Never runs offensive tools itself.
+// Fail-closed auth when EXECUTOR_SECRET is configured (required in prod).
 
-import type { Env, ScanRequest, Scope, ToolTask, ToolTaskResult, ToolName } from './types.js';
+import type { Env, Finding, ScanRequest, Scope, ToolTask, ToolTaskResult, ToolName, Severity } from './types.js';
 import { ScanOrchestrator } from './do/scan-orchestrator.js';
-import { partitionByScope, assertInScope } from './scope/scope-guard.js';
+import { partitionByScope, assertInScope, evaluateScope } from './scope/scope-guard.js';
 import { FindingsStore } from './findings/store.js';
 import { draftDisclosure } from './report/drafter.js';
 import { listChecks } from './detect/registry.js';
 import { DASHBOARD_HTML } from './dashboard-html.js';
 import { planAttackSurface } from './planning/vuln-planner.js';
+import { auditLog, listAuditEvents } from './audit/log.js';
+import { inferQualityContext } from './findings/quality.js';
 
 export { ScanOrchestrator };
 
@@ -27,12 +23,10 @@ export default {
     const { pathname } = url;
 
     try {
-      // ─── Dashboard ───────────────────────────────────────────────────
       if (request.method === 'GET' && pathname === '/') {
         return new Response(DASHBOARD_HTML, { headers: { 'content-type': 'text/html; charset=utf-8' } });
       }
 
-      // ─── Passive Scan (existing) ────────────────────────────────────
       if (request.method === 'POST' && pathname === '/api/scan') {
         return await handleStartScan(request, env);
       }
@@ -58,30 +52,32 @@ export default {
         return json({ checks: listChecks().map((c) => ({ id: c.id, title: c.title, cwe: c.cwe })) });
       }
 
-      // ─── Task Queue: Executor Communication ─────────────────────────
+      if (request.method === 'GET' && pathname === '/api/audit') {
+        if (!authenticateOperator(request, env)) {
+          await auditLog(env, { action: 'auth.failed', detail: 'audit list unauthorized' });
+          return json({ error: 'Unauthorized' }, 401);
+        }
+        const events = await listAuditEvents(env, 100);
+        return json({ events });
+      }
 
-      // POST /api/tasks/dispatch — LLM planner creates tasks for a target
       if (request.method === 'POST' && pathname === '/api/tasks/dispatch') {
         return await handleDispatch(request, env);
       }
 
-      // GET /api/tasks/poll — Executor polls for pending tasks
       if (request.method === 'GET' && pathname === '/api/tasks/poll') {
         return await handlePoll(request, env);
       }
 
-      // POST /api/tasks/complete — Executor submits results
       if (request.method === 'POST' && pathname === '/api/tasks/complete') {
         return await handleComplete(request, env);
       }
 
-      // GET /api/tasks/status — View all tasks for a scan
       const taskStatusMatch = pathname.match(/^\/api\/tasks\/status\/([^/]+)$/);
       if (request.method === 'GET' && taskStatusMatch) {
         return await handleTaskStatus(taskStatusMatch[1], env);
       }
 
-      // POST /api/plan-attack — LLM plans attack surface and auto-dispatches tasks
       if (request.method === 'POST' && pathname === '/api/plan-attack') {
         return await handlePlanAttack(request, env);
       }
@@ -93,19 +89,28 @@ export default {
   },
 };
 
-// ─── Auth helper ──────────────────────────────────────────────────────────────
-
-function authenticateExecutor(request: Request, env: Env): boolean {
+/** Fail-closed: require EXECUTOR_SECRET unless ALLOW_INSECURE_EXECUTOR=true. */
+export function authenticateExecutor(request: Request, env: Env): boolean {
   const secret = env.EXECUTOR_SECRET;
-  if (!secret) return true; // No secret configured = open (dev mode)
+  if (!secret) {
+    return env.ALLOW_INSECURE_EXECUTOR === 'true';
+  }
   const header = request.headers.get('x-executor-secret') || '';
   return header === secret;
 }
 
-// ─── Task Queue Handlers ──────────────────────────────────────────────────────
+/** Operator actions (plan/dispatch/audit) use the same shared secret. */
+function authenticateOperator(request: Request, env: Env): boolean {
+  return authenticateExecutor(request, env);
+}
 
 async function handleDispatch(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as {
+  if (!authenticateOperator(request, env)) {
+    await auditLog(env, { action: 'auth.failed', detail: 'dispatch unauthorized' });
+    return json({ error: 'Unauthorized — set EXECUTOR_SECRET (or ALLOW_INSECURE_EXECUTOR=true for local only)' }, 401);
+  }
+
+  const body = (await request.json()) as {
     scanId: string;
     tool: ToolName;
     target: string;
@@ -115,10 +120,26 @@ async function handleDispatch(request: Request, env: Env): Promise<Response> {
   };
 
   if (!body.scope?.authorized) {
+    await auditLog(env, {
+      action: 'task.refused',
+      detail: 'Scope not authorized',
+      target: body.target,
+      program: body.scope?.program,
+    });
     return json({ error: 'Scope not authorized' }, 403);
   }
 
-  // Validate target is in scope
+  const decision = evaluateScope(body.target, body.scope);
+  if (!decision.allowed) {
+    await auditLog(env, {
+      action: 'scope.refused',
+      detail: decision.reason,
+      target: body.target,
+      program: body.scope.program,
+    });
+    return json({ error: `Target out of scope: ${decision.reason}` }, 403);
+  }
+
   try {
     assertInScope(body.target, body.scope);
   } catch (e) {
@@ -137,18 +158,25 @@ async function handleDispatch(request: Request, env: Env): Promise<Response> {
     createdAt: new Date().toISOString(),
   };
 
-  // Store in KV
   await env.STORMFORGE_KV.put(`task:${task.id}`, JSON.stringify(task));
-  // Add to pending queue
   const queue = await getQueue(env);
   queue.push(task.id);
   await env.STORMFORGE_KV.put('task_queue:pending', JSON.stringify(queue));
+
+  await auditLog(env, {
+    action: 'task.dispatch',
+    detail: `${task.tool} → ${task.target}`,
+    target: task.target,
+    program: task.scope.program,
+    meta: { taskId: task.id, tool: task.tool },
+  });
 
   return json({ taskId: task.id, status: 'pending' });
 }
 
 async function handlePoll(request: Request, env: Env): Promise<Response> {
   if (!authenticateExecutor(request, env)) {
+    await auditLog(env, { action: 'auth.failed', detail: 'poll unauthorized' });
     return json({ error: 'Unauthorized' }, 401);
   }
 
@@ -157,7 +185,6 @@ async function handlePoll(request: Request, env: Env): Promise<Response> {
     return json({ tasks: [] });
   }
 
-  // Grab up to 5 tasks at once
   const batch = queue.splice(0, 5);
   await env.STORMFORGE_KV.put('task_queue:pending', JSON.stringify(queue));
 
@@ -166,40 +193,80 @@ async function handlePoll(request: Request, env: Env): Promise<Response> {
     const raw = await env.STORMFORGE_KV.get(`task:${id}`);
     if (raw) {
       const task = JSON.parse(raw) as ToolTask;
+      // Re-validate scope at poll time
+      if (!task.scope?.authorized || !evaluateScope(task.target, task.scope).allowed) {
+        task.status = 'error';
+        await env.STORMFORGE_KV.put(`task:${id}`, JSON.stringify(task));
+        await auditLog(env, {
+          action: 'task.refused',
+          detail: 'Task failed scope re-check at poll',
+          target: task.target,
+          program: task.scope?.program,
+          meta: { taskId: id },
+        });
+        continue;
+      }
       task.status = 'running';
       await env.STORMFORGE_KV.put(`task:${id}`, JSON.stringify(task));
       tasks.push(task);
     }
   }
 
+  await auditLog(env, {
+    action: 'task.poll',
+    detail: `Dispensed ${tasks.length} task(s)`,
+    meta: { count: tasks.length },
+  });
+
   return json({ tasks });
 }
 
 async function handleComplete(request: Request, env: Env): Promise<Response> {
   if (!authenticateExecutor(request, env)) {
+    await auditLog(env, { action: 'auth.failed', detail: 'complete unauthorized' });
     return json({ error: 'Unauthorized' }, 401);
   }
 
-  const body = await request.json() as { taskId: string; result: ToolTaskResult };
+  const body = (await request.json()) as { taskId: string; result: ToolTaskResult };
   const raw = await env.STORMFORGE_KV.get(`task:${body.taskId}`);
   if (!raw) return json({ error: 'Task not found' }, 404);
 
   const task = JSON.parse(raw) as ToolTask;
-  task.status = body.result.exitCode === 0 ? 'done' : 'error';
+  task.status = body.result.timedOut
+    ? 'timeout'
+    : body.result.exitCode === 0
+      ? 'done'
+      : 'error';
   task.result = body.result;
   await env.STORMFORGE_KV.put(`task:${body.taskId}`, JSON.stringify(task));
 
-  // Persist any findings from the executor
+  let findingsCount = 0;
   if (body.result.findings?.length > 0) {
     const store = new FindingsStore(env.STORMFORGE_KV);
-    await store.upsertMany(task.scope.program, body.result.findings);
+    const ctx = inferQualityContext(
+      body.result.findings.map(() => ({} as Record<string, string>)),
+    );
+    const stats = await store.upsertMany(task.scope.program, body.result.findings, { ctx });
+    findingsCount = stats.added + stats.updated;
   }
 
-  return json({ status: task.status, findingsCount: body.result.findings?.length || 0 });
+  await auditLog(env, {
+    action: 'task.complete',
+    detail: `${task.tool} ${task.status} — ${findingsCount} findings stored`,
+    target: task.target,
+    program: task.scope.program,
+    meta: {
+      taskId: body.taskId,
+      exitCode: body.result.exitCode,
+      timedOut: !!body.result.timedOut,
+      command: body.result.command?.slice(0, 200),
+    },
+  });
+
+  return json({ status: task.status, findingsCount });
 }
 
 async function handleTaskStatus(scanId: string, env: Env): Promise<Response> {
-  // List all tasks for a scan (scan through KV — not ideal but functional)
   const list = await env.STORMFORGE_KV.list({ prefix: 'task:' });
   const tasks: ToolTask[] = [];
   for (const key of list.keys) {
@@ -213,21 +280,67 @@ async function handleTaskStatus(scanId: string, env: Env): Promise<Response> {
 }
 
 async function handlePlanAttack(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as { scope: Scope; targets: string[] };
+  if (!authenticateOperator(request, env)) {
+    await auditLog(env, { action: 'auth.failed', detail: 'plan-attack unauthorized' });
+    return json({ error: 'Unauthorized — set x-executor-secret' }, 401);
+  }
+
+  const body = (await request.json()) as {
+    scope: Scope;
+    targets: string[];
+    findings?: { checkId: string; severity: string; target: string; title?: string; evidence?: string }[];
+  };
 
   if (!body.scope?.authorized) {
+    await auditLog(env, {
+      action: 'plan.attack',
+      detail: 'REFUSED unauthorized scope',
+      program: body.scope?.program,
+    });
     return json({ error: 'Scope not authorized. Set authorized: true.' }, 403);
   }
 
-  const { refused } = partitionByScope(body.targets, body.scope);
+  const { allowed, refused } = partitionByScope(body.targets, body.scope);
   if (refused.length > 0) {
+    await auditLog(env, {
+      action: 'scope.refused',
+      detail: `${refused.length} target(s) out of scope`,
+      program: body.scope.program,
+      meta: { refused: refused.length },
+    });
     return json({ error: 'Targets out of scope', refused }, 403);
   }
 
-  // Use the vuln planner to generate tasks
-  const plan = await planAttackSurface(body.targets, body.scope, env);
+  const priorFindings: Finding[] = (body.findings || []).map((f) => ({
+    id: 'prior',
+    checkId: f.checkId,
+    title: f.title || f.checkId,
+    severity: (['info', 'low', 'medium', 'high', 'critical'].includes(f.severity)
+      ? f.severity
+      : 'info') as Severity,
+    target: f.target,
+    description: '',
+    evidence: f.evidence || '',
+    reproduction: [],
+    remediation: '',
+    references: [],
+    needsManualReview: true,
+    discoveredAt: new Date().toISOString(),
+  }));
 
-  // Dispatch all planned tasks
+  const plan = await planAttackSurface(allowed, body.scope, env, {
+    findings: priorFindings,
+  });
+
+  if (!plan.tasks.length) {
+    await auditLog(env, {
+      action: 'plan.attack',
+      detail: `No tasks: ${plan.rationale}`,
+      program: body.scope.program,
+    });
+    return json({ error: 'No tasks planned', rationale: plan.rationale }, 400);
+  }
+
   const taskIds: string[] = [];
   const scanId = crypto.randomUUID();
   for (const planned of plan.tasks) {
@@ -246,20 +359,30 @@ async function handlePlanAttack(request: Request, env: Env): Promise<Response> {
     taskIds.push(task.id);
   }
 
-  // Add all to pending queue
   const queue = await getQueue(env);
   queue.push(...taskIds);
   await env.STORMFORGE_KV.put('task_queue:pending', JSON.stringify(queue));
+
+  await auditLog(env, {
+    action: 'plan.attack',
+    detail: `Dispatched ${taskIds.length} tasks (${plan.source})`,
+    program: body.scope.program,
+    meta: { scanId, source: plan.source, count: taskIds.length },
+  });
 
   return json({
     scanId,
     tasksDispatched: taskIds.length,
     plan: plan.rationale,
-    tasks: plan.tasks.map((t, i) => ({ id: taskIds[i], tool: t.tool, target: t.target })),
+    source: plan.source,
+    tasks: plan.tasks.map((t, i) => ({
+      id: taskIds[i],
+      tool: t.tool,
+      target: t.target,
+      rationale: t.rationale,
+    })),
   });
 }
-
-// ─── Existing Scan Handlers ──────────────────────────────────────────────────
 
 async function handleStartScan(request: Request, env: Env): Promise<Response> {
   let req: ScanRequest;
@@ -270,10 +393,19 @@ async function handleStartScan(request: Request, env: Env): Promise<Response> {
   }
 
   const validationError = validateScanRequest(req);
-  if (validationError) return json({ error: validationError }, 400);
+  if (validationError) {
+    await auditLog(env, { action: 'scan.refused', detail: validationError, program: req?.scope?.program });
+    return json({ error: validationError }, 400);
+  }
 
   const { refused } = partitionByScope(req.targets, req.scope);
   if (refused.length > 0) {
+    await auditLog(env, {
+      action: 'scope.refused',
+      detail: 'scan targets out of scope',
+      program: req.scope.program,
+      meta: { refused: refused.length },
+    });
     return json({ error: 'One or more targets are out of scope', refused }, 403);
   }
 
@@ -286,6 +418,14 @@ async function handleStartScan(request: Request, env: Env): Promise<Response> {
     headers: { 'content-type': 'application/json' },
   });
   if (!res.ok) return new Response(await res.text(), { status: res.status });
+
+  await auditLog(env, {
+    action: 'scan.started',
+    detail: `Passive scan ${scanId}`,
+    program: req.scope.program,
+    meta: { scanId, targets: req.targets.length },
+  });
+
   return json({ scanId, status: 'running' });
 }
 
@@ -315,8 +455,6 @@ async function handleReport(program: string, env: Env): Promise<Response> {
   return new Response(markdown, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 async function getQueue(env: Env): Promise<string[]> {
   const raw = await env.STORMFORGE_KV.get('task_queue:pending');
   return raw ? JSON.parse(raw) : [];
@@ -326,7 +464,8 @@ function validateScanRequest(req: ScanRequest): string | null {
   if (!req || typeof req !== 'object') return 'Missing request body';
   if (!req.scope) return 'Missing scope';
   if (!req.scope.authorized) return 'Scope is not marked authorized. Confirm you have permission to test these assets.';
-  if (!Array.isArray(req.scope.inScope) || req.scope.inScope.length === 0) return 'scope.inScope must list at least one authorized host';
+  if (!Array.isArray(req.scope.inScope) || req.scope.inScope.length === 0)
+    return 'scope.inScope must list at least one authorized host';
   if (!Array.isArray(req.targets) || req.targets.length === 0) return 'targets must be a non-empty array';
   if (req.targets.length > 50) return 'Too many seed targets (max 50). Split into multiple scans.';
   return null;

@@ -29,5 +29,7 @@ SCAN_MODE = "hybrid"
 LLM_PLANNER_ENDPOINT = ""
 LLM_PLANNER_MODEL = ""
 # Secrets (set with `wrangler secret put <NAME>`):
-#   LLM_PLANNER_API_KEY — OpenAI/OpenRouter key for the planner
-#   EXECUTOR_SECRET     — Shared secret for executor auth
+#   LLM_PLANNER_API_KEY — OpenAI/OpenRouter/xAI key for the planner
+#   EXECUTOR_SECRET     — Required shared secret for executor + plan/dispatch
+# Local only: set ALLOW_INSECURE_EXECUTOR = "true" to allow missing secret (never in prod).
+# ALLOW_INSECURE_EXECUTOR = "true"

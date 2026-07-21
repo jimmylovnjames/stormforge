@@ -45,7 +45,7 @@ export async function runScan(
   });
 
   // 3. Advisory planning pass: probe a few extra suggested paths (still scope-gated).
-  const plan = await planNextPaths(probes, env);
+  const plan = await planNextPaths(probes, env, req.scope.program);
   if (plan.suggestedPaths.length) {
     const extraUrls = buildProbeUrls(allowed, plan.suggestedPaths);
     const { allowed: allowedExtra } = partitionByScope(extraUrls, req.scope);

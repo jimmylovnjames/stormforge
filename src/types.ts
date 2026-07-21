@@ -77,6 +77,16 @@ export interface Finding {
    */
   needsManualReview: boolean;
   discoveredAt: string;
+  /** 0–1 confidence after quality scoring. */
+  confidence?: number;
+  /** How the evidence was obtained. */
+  evidenceGrade?: 'canary' | 'tool-confirmed' | 'fingerprint' | 'heuristic';
+  /** Ready for human-edited bounty submission (never auto-submit). */
+  submitReady?: boolean;
+  /** Canonical form of target for cross-source dedupe. */
+  canonicalTarget?: string;
+  /** Originating component. */
+  source?: 'worker' | 'executor';
 }
 
 /** Interface every detection check implements. Pure and synchronous. */
@@ -159,6 +169,10 @@ export interface ToolTaskResult {
   findings: Finding[];
   durationMs: number;
   completedAt: string;
+  /** True when the process was killed due to timeout. */
+  timedOut?: boolean;
+  /** Structured executor log line for audit. */
+  command?: string;
 }
 
 // ─── Environment bindings ────────────────────────────────────────────────────
@@ -174,4 +188,9 @@ export interface Env {
   LLM_PLANNER_API_KEY?: string;
   /** Shared secret between C2 and executor for auth. */
   EXECUTOR_SECRET?: string;
+  /**
+   * When "true", allow missing EXECUTOR_SECRET (local dev only).
+   * Production must leave this unset/false — auth fails closed.
+   */
+  ALLOW_INSECURE_EXECUTOR?: string;
 }
