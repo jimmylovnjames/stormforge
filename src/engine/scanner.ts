@@ -18,6 +18,11 @@ import {
   buildInjectionProbeUrls,
   shouldProbeInjection,
 } from '../recon/injection-probes.js';
+import {
+  REDIRECT_SSRF_PATHS,
+  buildSsrfRedirectProbeUrls,
+  shouldProbeSsrfRedirect,
+} from '../recon/ssrf-probes.js';
 import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
@@ -119,7 +124,26 @@ export async function runScan(
     });
   }
 
-  // 6. Run detection checks over all probes.
+  // 6. Safe open-redirect / SSRF canary follow-ups (in-scope host + url= params).
+  const ssrfUrls = collectSsrfRedirectFollowUps(probes);
+  const { allowed: allowedSsrf } = partitionByScope(ssrfUrls.map((x) => x.url), req.scope);
+  const allowedSsrfSet = new Set(allowedSsrf);
+  const freshSsrf = ssrfUrls.filter((x) => allowedSsrfSet.has(x.url) && !probes.some((p) => p.url === x.url));
+  if (freshSsrf.length) {
+    await mapWithConcurrency(freshSsrf, concurrency, async (item) => {
+      const p = await client.probe(item.url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'text/html, application/json;q=0.9, */*;q=0.8' },
+        // Manual redirects so Location canaries are visible for open-redirect checks.
+        redirect: item.mode === 'redirect' ? false : true,
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'ssrf-redirect-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 7. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
     const findings = runChecks(probe, { scope: req.scope, siblings: probes });
@@ -128,7 +152,7 @@ export async function runScan(
   const findings = [...dedup.values()];
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // 7. Assemble report.
+  // 8. Assemble report.
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -201,6 +225,46 @@ export function collectInjectionFollowUps(probes: ProbeResult[]): string[] {
   return [...out];
 }
 
+export interface SsrfFollowUp {
+  url: string;
+  mode: 'redirect' | 'ssrf';
+}
+
+/** Build open-redirect + SSRF canary follow-ups (capped). */
+export function collectSsrfRedirectFollowUps(probes: ProbeResult[]): SsrfFollowUp[] {
+  const out: SsrfFollowUp[] = [];
+  const seen = new Set<string>();
+  let budget = 20;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeSsrfRedirect(p)) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    const built = buildSsrfRedirectProbeUrls(cleanBase, 2);
+    for (const url of built.openRedirect) {
+      if (budget <= 0) break;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push({ url, mode: 'redirect' });
+      budget--;
+    }
+    for (const url of [...built.metadata, ...built.loopback]) {
+      if (budget <= 0) break;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push({ url, mode: 'ssrf' });
+      budget--;
+    }
+  }
+  return out;
+}
+
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */
 function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
   const urls = new Set<string>();
@@ -209,6 +273,7 @@ function buildProbeUrls(targets: string[], extraPaths: string[]): string[] {
     ...BRUTEFORCE_PATHS,
     ...AUTH_IDOR_PATHS,
     ...REFLECTION_PATHS,
+    ...REDIRECT_SSRF_PATHS,
     ...SECRET_LEAK_PATHS,
     ...SENSITIVE_PATHS,
     ...extraPaths,

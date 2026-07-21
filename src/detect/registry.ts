@@ -13,6 +13,7 @@ import { authAccessCheck } from './checks/auth-access.js';
 import { weakJwtCheck } from './checks/weak-jwt.js';
 import { rateLimitCheck } from './checks/rate-limit.js';
 import { xssInjectionCheck } from './checks/xss-injection.js';
+import { ssrfRedirectCheck } from './checks/ssrf-redirect.js';
 import { secretsExposureCheck } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -28,6 +29,7 @@ const REGISTRY: Check[] = [
   secretsExposureCheck,
   rateLimitCheck,
   xssInjectionCheck,
+  ssrfRedirectCheck,
 ];
 
 export function registerCheck(check: Check): void {

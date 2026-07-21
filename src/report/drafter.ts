@@ -109,6 +109,12 @@ function impactStatement(f: Finding): string {
   if (f.cwe === 'CWE-209') {
     return 'Verbose error messages disclose implementation details that help attackers refine injection and template attacks.';
   }
+  if (f.cwe === 'CWE-601') {
+    return 'Open redirects enable phishing and token/session theft by sending users from a trusted domain to an attacker-controlled site.';
+  }
+  if (f.cwe === 'CWE-918') {
+    return 'Server-side request forgery can reach internal services and cloud metadata endpoints, often yielding credentials and full environment compromise.';
+  }
 
   switch (f.severity) {
     case 'critical':
