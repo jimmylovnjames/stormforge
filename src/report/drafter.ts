@@ -2,18 +2,23 @@
 // that the operator reviews and submits. The tool never auto-submits.
 
 import type { Finding, Scope } from '../types.js';
-import { CVSS_BAND } from '../findings/severity.js';
+import { cvssFor } from './cvss.js';
 
 export function draftFinding(finding: Finding, scope: Scope): string {
   const lines: string[] = [];
   const platformTitle = platformLabel(scope.platform);
+  const cvss = cvssFor(finding);
 
   lines.push(`# ${finding.title}`);
   lines.push('');
   lines.push(`**Program:** ${scope.program} (${platformTitle})`);
-  lines.push(`**Severity:** ${finding.severity} (CVSS band ${CVSS_BAND[finding.severity]})`);
+  lines.push(`**Severity:** ${finding.severity} (CVSS ${cvss.score.toFixed(1)} — ${cvss.severity})`);
+  lines.push(`**CVSS:3.1 Vector:** \`${cvss.vector}\``);
   lines.push(`**Asset:** ${finding.target}`);
   if (finding.cwe) lines.push(`**Weakness:** ${finding.cwe}`);
+  if (typeof finding.confidence === 'number') {
+    lines.push(`**Detection confidence:** ${(finding.confidence * 100).toFixed(0)}%`);
+  }
   if (finding.needsManualReview) {
     lines.push('');
     lines.push('> ⚠️ **Candidate finding — verify manually before submitting.** This was surfaced by passive detection and has not been confirmed exploitable.');
