@@ -101,6 +101,20 @@
   </section>
 
   <section class="panel">
+    <h2>4 · Autonomy</h2>
+    <p class="muted">Learned tactics, crawl re-scans, submit-ready counts, and attack chains.</p>
+    <button type="button" id="loadAutonomy" class="secondary">Refresh Autonomy</button>
+    <div id="autonomy" style="margin-top:12px"><p class="muted">Click refresh after a scan.</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>5 · Bounty Packs</h2>
+    <p class="muted">Submit-ready high/critical drafts (CVSS-ranked). Never auto-submitted.</p>
+    <button type="button" id="loadBounty" class="secondary">Load Bounty Packs</button>
+    <div id="bounty" style="margin-top:12px"><p class="muted">Click load after confirmed findings.</p></div>
+  </section>
+
+  <section class="panel">
     <h2>Report Draft</h2>
     <pre id="report" class="muted">Run a scan, then click “View Report Draft”.</pre>
   </section>
@@ -172,10 +186,74 @@ function renderReport(report) {
     .sort((a,b) => rank(b.severity)-rank(a.severity))
     .map(f => `<tr>
       <td><span class="pill ${f.severity}">${f.severity}</span></td>
-      <td><b>${esc(f.title)}</b><br><span class="muted">${esc(f.target)}</span>${f.needsManualReview ? '<br><span class="review">⚠ verify manually</span>':''}</td>
+      <td><b>${esc(f.title)}</b><br><span class="muted">${esc(f.target)}</span>${f.needsManualReview ? '<br><span class="review">⚠ verify manually</span>':''}${f.submitReady ? '<br><span class="muted">submit-ready</span>':''}${typeof f.confidence === 'number' ? `<br><span class="muted">conf ${f.confidence.toFixed(2)}</span>`:''}</td>
       <td>${esc(f.cwe||'')}</td>
     </tr>`).join('');
   $('findings').innerHTML = `<table><thead><tr><th>Sev</th><th>Finding</th><th>CWE</th></tr></thead><tbody>${rows}</tbody></table>`;
+  loadAutonomy();
+}
+
+async function loadAutonomy() {
+  const program = $('program').value.trim();
+  if (!program) return;
+  try {
+    const res = await fetch('/api/autonomy/' + encodeURIComponent(program));
+    const data = await res.json();
+    if (!res.ok) { $('autonomy').innerHTML = '<p class="muted">' + esc(data.error || res.status) + '</p>'; return; }
+    const tactics = (data.topTactics || []).map(t => `<code>${esc(t)}</code>`).join(' ');
+    const chains = (data.attackChains || []).map(c =>
+      `<li><span class="pill ${c.severity}">${esc(c.severity)}</span> <b>${esc(c.title)}</b><br><span class="muted">${esc(c.narrative)}</span></li>`
+    ).join('');
+    const rescans = (data.recentRescans || []).map(r =>
+      `<li class="muted">${esc(r.sourceTool || 'rescan')} · ${r.targetCount} targets · ${esc(r.createdAt)}</li>`
+    ).join('');
+    $('autonomy').innerHTML = `
+      <div class="stat-row">
+        <div class="stat"><b>${data.tacticsCount||0}</b>tactics</div>
+        <div class="stat"><b>${data.submitReadyCount||0}</b>submit-ready</div>
+        <div class="stat"><b>${data.highImpactCount||0}</b>high-impact</div>
+        <div class="stat"><b>${data.bountyDraftCount||0}</b>bounty drafts</div>
+      </div>
+      <p style="margin-top:12px"><span class="muted">Top tactics:</span> ${tactics || '<span class="muted">none yet</span>'}</p>
+      <p class="muted">Recent re-scans</p>
+      <ul>${rescans || '<li class="muted">none</li>'}</ul>
+      <p class="muted">Attack chains</p>
+      <ul>${chains || '<li class="muted">none correlated yet</li>'}</ul>`;
+  } catch (e) {
+    $('autonomy').innerHTML = '<p class="muted">Error loading autonomy</p>';
+  }
+}
+
+async function loadBounty() {
+  const program = $('program').value.trim();
+  if (!program) { alert('Set a program name first.'); return; }
+  $('bounty').innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const res = await fetch('/api/bounty/' + encodeURIComponent(program));
+    const data = await res.json();
+    if (!res.ok) { $('bounty').innerHTML = '<p class="muted">' + esc(data.error || res.status) + '</p>'; return; }
+    if (!data.bountyDrafts) { $('bounty').innerHTML = '<p class="muted">No submit-ready packs yet.</p>'; return; }
+    const packs = (data.packets || []).map((p, i) => {
+      const title = esc(p.title || p.finding?.title || ('Pack ' + (i+1)));
+      const md = p.markdown || p.body || '';
+      return `<div style="margin:10px 0;padding:10px;border:1px solid var(--line);border-radius:8px">
+        <b>${title}</b>
+        <button type="button" class="secondary" style="margin-left:8px;padding:4px 10px" data-copy="${i}">Copy</button>
+        <pre class="muted" style="white-space:pre-wrap;max-height:180px;overflow:auto">${esc(md.slice(0,1200))}</pre>
+      </div>`;
+    }).join('');
+    $('bounty').innerHTML = packs || '<pre class="muted" style="white-space:pre-wrap">' + esc((data.combinedMarkdown||'').slice(0,2000)) + '</pre>';
+    $('bounty').querySelectorAll('[data-copy]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.getAttribute('data-copy'));
+        const text = data.packets[idx]?.markdown || data.packets[idx]?.body || data.combinedMarkdown || '';
+        navigator.clipboard.writeText(text);
+        btn.textContent = 'Copied';
+      });
+    });
+  } catch (e) {
+    $('bounty').innerHTML = '<p class="muted">Error loading bounty packs</p>';
+  }
 }
 
 async function loadReport() {
@@ -190,6 +268,8 @@ const esc = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>
 
 $('launch').addEventListener('click', launch);
 $('loadReport').addEventListener('click', loadReport);
+$('loadAutonomy').addEventListener('click', loadAutonomy);
+$('loadBounty').addEventListener('click', loadBounty);
 </script>
 </body>
 </html>

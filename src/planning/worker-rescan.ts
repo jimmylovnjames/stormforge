@@ -103,6 +103,7 @@ export async function enqueueWorkerRescan(
   });
   if (!res.ok) return null;
 
+  // Persist rescan meta with program for autonomy status filtering.
   await env.STORMFORGE_KV.put(dedupeKey, scanId, { expirationTtl: 3600 });
   await env.STORMFORGE_KV.put(
     `rescan:meta:${scanId}`,

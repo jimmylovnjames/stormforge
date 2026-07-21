@@ -103,6 +103,20 @@ export const DASHBOARD_HTML = `<!doctype html>
   </section>
 
   <section class="panel">
+    <h2>4 · Autonomy</h2>
+    <p class="muted">Learned tactics, crawl re-scans, submit-ready counts, and attack chains.</p>
+    <button type="button" id="loadAutonomy" class="secondary">Refresh Autonomy</button>
+    <div id="autonomy" style="margin-top:12px"><p class="muted">Click refresh after a scan.</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>5 · Bounty Packs</h2>
+    <p class="muted">Submit-ready high/critical drafts (CVSS-ranked). Never auto-submitted.</p>
+    <button type="button" id="loadBounty" class="secondary">Load Bounty Packs</button>
+    <div id="bounty" style="margin-top:12px"><p class="muted">Click load after confirmed findings.</p></div>
+  </section>
+
+  <section class="panel">
     <h2>Report Draft</h2>
     <pre id="report" class="muted">Run a scan, then click “View Report Draft”.</pre>
   </section>

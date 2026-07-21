@@ -31,6 +31,8 @@ import type { Finding } from './types.js';
 import { isCanaryToken, recordCanaryHit } from './recon/canary.js';
 import { validateSession } from './recon/session.js';
 import { enqueueWorkerRescan, extractCrawlUrls } from './planning/worker-rescan.js';
+import { buildAutonomyStatus, type RescanMeta } from './planning/autonomy-status.js';
+import { correlateAttackChains } from './findings/attack-chains.js';
 
 export { ScanOrchestrator };
 
@@ -83,6 +85,12 @@ export default {
       const draftsMatch = pathname.match(/^\/api\/drafts\/([^/]+)$/);
       if (request.method === 'GET' && draftsMatch) {
         return await handleListDrafts(decodeURIComponent(draftsMatch[1]), env);
+      }
+
+      // GET /api/autonomy/:program — tactics, rescans, submit-ready, attack chains
+      const autonomyMatch = pathname.match(/^\/api\/autonomy\/([^/]+)$/);
+      if (request.method === 'GET' && autonomyMatch) {
+        return await handleAutonomyStatus(decodeURIComponent(autonomyMatch[1]), env);
       }
 
       // GET /api/bounty/:program?platform=hackerone|immunefi — CVSS-ranked bounty packs
@@ -567,6 +575,72 @@ async function handleListDrafts(program: string, env: Env): Promise<Response> {
   return json({ program, drafts, total: drafts.length });
 }
 
+async function handleAutonomyStatus(program: string, env: Env): Promise<Response> {
+  const store = new FindingsStore(env.STORMFORGE_KV);
+  const findings = await store.getAll(program);
+
+  let tactics: string[] = [];
+  try {
+    const raw = await env.STORMFORGE_KV.get(`tactics:${program}`, 'json');
+    if (Array.isArray(raw)) tactics = raw as string[];
+  } catch {
+    /* ignore */
+  }
+
+  const rescans: RescanMeta[] = [];
+  const rescanList = await env.STORMFORGE_KV.list({ prefix: 'rescan:meta:' });
+  for (const key of rescanList.keys.slice(0, 40)) {
+    const raw = await env.STORMFORGE_KV.get(key.name);
+    if (!raw) continue;
+    try {
+      const meta = JSON.parse(raw) as RescanMeta & { program?: string };
+      if (meta.program && meta.program !== program) continue;
+      // Meta may not include program — include when parent listing is small.
+      if (!meta.program || meta.program === program) {
+        rescans.push({
+          scanId: meta.scanId,
+          sourceTool: meta.sourceTool,
+          targets: meta.targets ?? [],
+          createdAt: meta.createdAt,
+          parentScanId: meta.parentScanId,
+        });
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  rescans.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+
+  const bountyRaw = await env.STORMFORGE_KV.get(`bounty:${program}:latest`);
+  let bountyDraftCount = 0;
+  if (bountyRaw) {
+    try {
+      const parsed = JSON.parse(bountyRaw) as { count?: number };
+      bountyDraftCount = parsed.count ?? 0;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const scope: Scope = {
+    program,
+    platform: 'hackerone',
+    inScope: [],
+    outOfScope: [],
+    authorized: true,
+  };
+  const status = buildAutonomyStatus({
+    program,
+    tactics,
+    findings,
+    rescans: rescans.slice(0, 10),
+    bountyDraftCount,
+  });
+  const chains = correlateAttackChains(findings, scope);
+
+  return json({ ...status, attackChains: chains });
+}
+
 async function handleBountyPacks(program: string, url: URL, env: Env): Promise<Response> {
   const store = new FindingsStore(env.STORMFORGE_KV);
   const findings = await store.getAll(program);
@@ -584,6 +658,7 @@ async function handleBountyPacks(program: string, url: URL, env: Env): Promise<R
     authorized: true,
   };
   const pack = draftBountyAutomation(findings, scope, platform);
+  const chains = correlateAttackChains(findings, scope);
   const ranked = sortByCvss(findings).map((f) => {
     const cvss = estimateCvss(f);
     return {
@@ -608,6 +683,7 @@ async function handleBountyPacks(program: string, url: URL, env: Env): Promise<R
       count: pack.count,
       packets: pack.packets,
       combinedMarkdown: pack.combinedMarkdown,
+      attackChains: chains,
     }),
     { expirationTtl: 7776000 },
   );
@@ -617,6 +693,7 @@ async function handleBountyPacks(program: string, url: URL, env: Env): Promise<R
     platform: pack.platform,
     bountyDrafts: pack.count,
     packets: pack.packets,
+    attackChains: chains,
     rankedByCvss: ranked,
     combinedMarkdown: pack.combinedMarkdown,
   });
