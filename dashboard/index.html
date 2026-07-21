@@ -68,6 +68,10 @@
     <textarea id="outOfScope" placeholder="blog.example.com"></textarea>
     <label>Seed targets to probe (must be in scope)</label>
     <textarea id="targets" placeholder="https://api.example.com&#10;www.example.com"></textarea>
+    <label>Session cookie <span class="muted">(optional — enables auth dual-pass / IDOR)</span></label>
+    <input id="sessionCookie" type="password" autocomplete="off" placeholder="session=…; other=…" />
+    <label>Authorization header <span class="muted">(optional)</span></label>
+    <input id="sessionAuth" type="password" autocomplete="off" placeholder="Bearer eyJ…" />
     <div class="check">
       <input type="checkbox" id="authorized" />
       <label for="authorized" style="margin:0;color:var(--fg)">
@@ -108,7 +112,12 @@ const lines = (v) => v.split('\n').map(s => s.trim()).filter(Boolean);
 let pollTimer = null;
 
 function buildRequest() {
-  return {
+  const session = {};
+  const cookie = $('sessionCookie').value.trim();
+  const authorization = $('sessionAuth').value.trim();
+  if (cookie) session.cookie = cookie;
+  if (authorization) session.authorization = authorization;
+  const body = {
     scope: {
       program: $('program').value.trim() || 'unnamed',
       platform: $('platform').value,
@@ -118,6 +127,8 @@ function buildRequest() {
     },
     targets: lines($('targets').value),
   };
+  if (cookie || authorization) body.session = session;
+  return body;
 }
 
 async function launch() {

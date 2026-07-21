@@ -16,6 +16,39 @@ import {
   urlCarriesLoopbackTarget,
   urlCarriesRedirectCanary,
 } from '../../recon/ssrf-probes.js';
+import { urlCarriesBlindCanary, type CanaryHit } from '../../recon/canary.js';
+
+/** Confirmed blind SSRF when the Worker canary received an outbound hit. */
+export function makeBlindSsrfFinding(
+  probeUrl: string,
+  canaryUrl: string,
+  hit: CanaryHit,
+): Finding {
+  return {
+    id: makeFindingId('ssrf-blind-canary', probeUrl, hit.token),
+    checkId: 'ssrf-blind-canary',
+    title: 'Confirmed blind SSRF — OAST canary hit',
+    severity: 'critical',
+    target: probeUrl,
+    description:
+      'The target fetched StormForge’s out-of-band canary URL after a user-controlled URL parameter was supplied. This confirms server-side request forgery (blind SSRF).',
+    evidence: `Probe: ${probeUrl}\nCanary: ${canaryUrl}\nHit at: ${hit.hitAt}\nHit method: ${hit.method}\nHit UA: ${hit.userAgent}\nCF-Connecting-IP: ${hit.cfConnectingIp ?? '<unknown>'}`,
+    reproduction: [
+      `curl -s '${probeUrl}'`,
+      `Confirm a hit appears on GET ${canaryUrl} (or Worker KV canary:hit:${hit.token})`,
+      'Do not pivot to internal services beyond authorized testing',
+    ],
+    remediation:
+      'Block user-controlled server-side fetches or enforce a strict destination allowlist (deny RFC1918, link-local, metadata, and arbitrary external hosts).',
+    cwe: 'CWE-918',
+    references: [
+      'https://cwe.mitre.org/data/definitions/918.html',
+      'https://owasp.org/www-community/attacks/Server_Side_Request_Forgery',
+    ],
+    needsManualReview: false,
+    discoveredAt: new Date().toISOString(),
+  };
+}
 
 export const ssrfRedirectCheck: Check = {
   id: 'ssrf-open-redirect',
@@ -132,6 +165,30 @@ export const ssrfRedirectCheck: Check = {
         remediation: 'Allowlist redirect targets; reject absolute external URLs unless explicitly trusted.',
         cwe: 'CWE-601',
         references: ['https://cwe.mitre.org/data/definitions/601.html'],
+        needsManualReview: true,
+        discoveredAt: new Date().toISOString(),
+      });
+    }
+
+    // ── Blind OAST canary echo (soft — confirmed hits are added by scanner via KV) ──
+    if (probe.body && urlCarriesBlindCanary(probe.url) && /\/api\/canary\/[a-f0-9]{16,}/i.test(probe.body)) {
+      findings.push({
+        id: makeFindingId(this.id, probe.url, 'blind-canary-echo'),
+        checkId: this.id,
+        title: 'Possible SSRF — blind canary URL echoed in response',
+        severity: 'medium',
+        target: probe.url,
+        description:
+          'A Worker OAST canary URL supplied in a fetch/redirect parameter was reflected in the response body. Await canary hit confirmation for a high-confidence SSRF finding.',
+        evidence: `URL: ${probe.url}\nStatus: ${probe.status}\nBody preview: ${preview(probe.body)}`,
+        reproduction: [
+          `curl -s '${probe.url}'`,
+          'Confirm the canary URL is reflected; check Worker /api/canary hit logs for outbound fetch',
+        ],
+        remediation:
+          'Disable user-controlled server-side fetches or restrict destinations with a strict allowlist.',
+        cwe: 'CWE-918',
+        references: ['https://cwe.mitre.org/data/definitions/918.html'],
         needsManualReview: true,
         discoveredAt: new Date().toISOString(),
       });

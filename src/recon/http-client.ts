@@ -55,6 +55,11 @@ export interface ProbeOptions {
   timeoutMs?: number;
   /** Follow redirects (default true). */
   redirect?: boolean;
+  /**
+   * When true, do not merge client defaultHeaders (anonymous dual-pass
+   * while an authenticated session is configured).
+   */
+  skipDefaultHeaders?: boolean;
 }
 
 export class HttpClient {
@@ -62,6 +67,8 @@ export class HttpClient {
     private readonly scope: Scope,
     private readonly limiter: RateLimiter,
     private readonly userAgent = 'StormForge/1.0 (+authorized-bug-bounty-recon)',
+    /** Merged into every probe unless skipDefaultHeaders is set (e.g. session Cookie). */
+    private readonly defaultHeaders: Record<string, string> = {},
   ) {}
 
   /** Perform one non-destructive probe. Never throws on HTTP errors — returns a ProbeResult with `error` populated. */
@@ -86,9 +93,10 @@ export class HttpClient {
     const started = Date.now();
 
     try {
+      const baseHeaders = opts.skipDefaultHeaders ? {} : this.defaultHeaders;
       const res = await fetch(url, {
         method,
-        headers: { 'user-agent': this.userAgent, ...(opts.headers ?? {}) },
+        headers: { 'user-agent': this.userAgent, ...baseHeaders, ...(opts.headers ?? {}) },
         redirect: opts.redirect === false ? 'manual' : 'follow',
         signal: controller.signal,
       });

@@ -36,6 +36,16 @@ const BY_CHECK: Record<string, Omit<CvssEstimate, 'rating'>> = {
     score: 9.3,
     rationale: 'SSRF to metadata/internal services can leak cloud credentials',
   },
+  'ssrf-blind-canary': {
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:L/A:N',
+    score: 9.6,
+    rationale: 'OAST-confirmed blind SSRF — server fetched attacker-controlled URL',
+  },
+  'auth-differential': {
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N',
+    score: 6.5,
+    rationale: 'Authenticated horizontal IDOR — session reads other users’ objects',
+  },
   'path-traversal': {
     vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N',
     score: 7.5,

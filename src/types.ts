@@ -129,12 +129,32 @@ export interface CheckContext {
   siblings?: ProbeResult[];
 }
 
+/**
+ * Optional authenticated session for dual-pass recon.
+ * Values are merged into probe headers and must never be logged.
+ */
+export interface ScanSession {
+  /** Cookie header value (e.g. "session=abc; other=1"). */
+  cookie?: string;
+  /** Authorization header (e.g. "Bearer eyJ…"). */
+  authorization?: string;
+  /** Extra request headers merged into every authenticated probe. */
+  headers?: Record<string, string>;
+}
+
 export interface ScanRequest {
   scope: Scope;
   /** Seed URLs/hosts to probe (all must be in scope). */
   targets: string[];
   /** Extra paths to probe on each target host, beyond the default wordlist. */
   extraPaths?: string[];
+  /** Authenticated session — enables dual-pass anon vs auth + horizontal IDOR. */
+  session?: ScanSession;
+  /**
+   * Public base URL of this Worker for blind SSRF OAST canaries.
+   * Injected from the incoming request origin when omitted.
+   */
+  canaryBaseUrl?: string;
 }
 
 export interface ScanReport {

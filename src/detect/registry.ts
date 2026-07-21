@@ -10,6 +10,7 @@ import { versionCveCheck } from './checks/version-cve.js';
 import { apiSchemaExposureCheck } from './checks/api-schema-exposure.js';
 import { graphqlIntrospectionCheck } from './checks/graphql-introspection.js';
 import { authAccessCheck } from './checks/auth-access.js';
+import { authDifferentialCheck } from './checks/auth-differential.js';
 import { weakJwtCheck } from './checks/weak-jwt.js';
 import { rateLimitCheck } from './checks/rate-limit.js';
 import { xssInjectionCheck } from './checks/xss-injection.js';
@@ -36,6 +37,7 @@ const REGISTRY: Check[] = [
   apiSchemaExposureCheck,
   graphqlIntrospectionCheck,
   authAccessCheck,
+  authDifferentialCheck,
   weakJwtCheck,
   secretsExposureCheck,
   rateLimitCheck,

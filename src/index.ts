@@ -28,6 +28,8 @@ import {
 } from './findings/confidence.js';
 import { shouldAutoDraft } from './findings/prioritize.js';
 import type { Finding } from './types.js';
+import { isCanaryToken, recordCanaryHit } from './recon/canary.js';
+import { validateSession } from './recon/session.js';
 
 export { ScanOrchestrator };
 
@@ -40,6 +42,12 @@ export default {
       // ─── Dashboard ───────────────────────────────────────────────────
       if (request.method === 'GET' && pathname === '/') {
         return new Response(DASHBOARD_HTML, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      }
+
+      // ─── Blind SSRF / OAST canary ─────────────────────────────────────
+      const canaryMatch = pathname.match(/^\/api\/canary\/([a-fA-F0-9]{16,64})$/);
+      if ((request.method === 'GET' || request.method === 'HEAD') && canaryMatch) {
+        return await handleCanaryHit(canaryMatch[1], request, env);
       }
 
       // ─── Passive Scan (existing) ────────────────────────────────────
@@ -409,6 +417,15 @@ async function handleStartScan(request: Request, env: Env): Promise<Response> {
     return json({ error: 'Invalid JSON body' }, 400);
   }
 
+  // Inject Worker origin for blind SSRF OAST when the client did not supply one.
+  if (!req.canaryBaseUrl) {
+    try {
+      req.canaryBaseUrl = new URL(request.url).origin;
+    } catch {
+      /* leave unset */
+    }
+  }
+
   const validationError = validateScanRequest(req);
   if (validationError) return json({ error: validationError }, 400);
 
@@ -427,6 +444,32 @@ async function handleStartScan(request: Request, env: Env): Promise<Response> {
   });
   if (!res.ok) return new Response(await res.text(), { status: res.status });
   return json({ scanId, status: 'running' });
+}
+
+async function handleCanaryHit(token: string, request: Request, env: Env): Promise<Response> {
+  if (!isCanaryToken(token)) return json({ error: 'Invalid canary token' }, 400);
+  await recordCanaryHit(env.STORMFORGE_KV, token, {
+    hitAt: new Date().toISOString(),
+    method: request.method,
+    userAgent: request.headers.get('user-agent') ?? '',
+    cfConnectingIp: request.headers.get('cf-connecting-ip') ?? undefined,
+    path: new URL(request.url).pathname,
+  });
+  // Tiny body so fetchers / SSRF sinks that require 200 + content still "succeed".
+  if (request.method === 'HEAD') {
+    return new Response(null, {
+      status: 200,
+      headers: { 'cache-control': 'no-store', 'x-stormforge-canary': 'hit' },
+    });
+  }
+  return new Response('ok', {
+    status: 200,
+    headers: {
+      'content-type': 'text/plain; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-stormforge-canary': 'hit',
+    },
+  });
 }
 
 async function handleStatus(scanId: string, env: Env): Promise<Response> {
@@ -603,6 +646,19 @@ function validateScanRequest(req: ScanRequest): string | null {
   if (!Array.isArray(req.scope.inScope) || req.scope.inScope.length === 0) return 'scope.inScope must list at least one authorized host';
   if (!Array.isArray(req.targets) || req.targets.length === 0) return 'targets must be a non-empty array';
   if (req.targets.length > 50) return 'Too many seed targets (max 50). Split into multiple scans.';
+  const sessionErr = validateSession(req.session);
+  if (sessionErr) return sessionErr;
+  if (req.canaryBaseUrl !== undefined) {
+    if (typeof req.canaryBaseUrl !== 'string') return 'canaryBaseUrl must be a string';
+    try {
+      const u = new URL(req.canaryBaseUrl);
+      if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+        return 'canaryBaseUrl must be http(s)';
+      }
+    } catch {
+      return 'canaryBaseUrl must be a valid URL';
+    }
+  }
   return null;
 }
 

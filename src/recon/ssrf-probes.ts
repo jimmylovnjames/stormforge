@@ -86,18 +86,36 @@ export interface SsrfRedirectProbeUrls {
   openRedirect: string[];
   metadata: string[];
   loopback: string[];
+  /** Blind OAST canary URLs pointing at this Worker's /api/canary/:token. */
+  blind: string[];
 }
 
-export function buildSsrfRedirectProbeUrls(baseUrl: string, maxParams = 2): SsrfRedirectProbeUrls {
+export interface BuildSsrfOptions {
+  maxParams?: number;
+  /** Full canary URL (https://worker/api/canary/<token>). */
+  blindCanaryUrl?: string;
+}
+
+export function buildSsrfRedirectProbeUrls(
+  baseUrl: string,
+  maxParamsOrOpts: number | BuildSsrfOptions = 2,
+): SsrfRedirectProbeUrls {
+  const opts: BuildSsrfOptions =
+    typeof maxParamsOrOpts === 'number' ? { maxParams: maxParamsOrOpts } : maxParamsOrOpts;
+  const maxParams = opts.maxParams ?? 2;
   const openRedirect: string[] = [];
   const metadata: string[] = [];
   const loopback: string[] = [];
+  const blind: string[] = [];
   try {
     const params = URL_PARAM_NAMES.slice(0, maxParams);
     for (const param of params) {
       openRedirect.push(withParam(baseUrl, param, REDIRECT_CANARY_URL));
       metadata.push(withParam(baseUrl, param, SSRF_METADATA_TARGETS[0]));
       loopback.push(withParam(baseUrl, param, SSRF_LOOPBACK_TARGETS[0]));
+      if (opts.blindCanaryUrl) {
+        blind.push(withParam(baseUrl, param, opts.blindCanaryUrl));
+      }
     }
     // One extra high-value metadata variant on the first param.
     if (params[0]) {
@@ -105,9 +123,9 @@ export function buildSsrfRedirectProbeUrls(baseUrl: string, maxParams = 2): Ssrf
       metadata.push(withParam(baseUrl, params[0], SSRF_METADATA_TARGETS[2]));
     }
   } catch {
-    return { openRedirect: [], metadata: [], loopback: [] };
+    return { openRedirect: [], metadata: [], loopback: [], blind: [] };
   }
-  return { openRedirect, metadata, loopback };
+  return { openRedirect, metadata, loopback, blind };
 }
 
 function withParam(baseUrl: string, param: string, value: string): string {

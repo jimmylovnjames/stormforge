@@ -24,6 +24,18 @@ import {
   shouldProbeSsrfRedirect,
 } from '../recon/ssrf-probes.js';
 import {
+  buildCanaryUrl,
+  getCanaryHit,
+  newCanaryToken,
+  putCanaryPending,
+} from '../recon/canary.js';
+import { hasSession, sessionHeaders } from '../recon/session.js';
+import {
+  buildNeighborIdUrls,
+  findHorizontalIdor,
+} from '../detect/checks/auth-differential.js';
+import { makeBlindSsrfFinding } from '../detect/checks/ssrf-redirect.js';
+import {
   CMD_EXEC_PATHS,
   buildCommandInjectionProbeUrls,
   shouldProbeCommandInjection,
@@ -84,7 +96,14 @@ export async function runScan(
   const rps = clampNumber(env.MAX_RPS, 5, 1, 50);
   const concurrency = clampNumber(env.MAX_CONCURRENCY, 8, 1, 32);
   const limiter = new RateLimiter(rps);
-  const client = new HttpClient(req.scope, limiter);
+  const defaults = sessionHeaders(req.session);
+  const client = new HttpClient(req.scope, limiter, undefined, defaults);
+  const sessionActive = hasSession(req.session);
+  const canaryBase = req.canaryBaseUrl?.replace(/\/$/, '') || '';
+
+  // Blind SSRF OAST registrations for this scan.
+  const blindCanaries: Array<{ token: string; canaryUrl: string; probeUrl: string }> = [];
+  const blindConfirmedFindings: Finding[] = [];
 
   // 1. Build the probe URL set from seed targets + path wordlists, scope-filtered.
   const { allowed } = partitionByScope(req.targets, req.scope);
@@ -166,11 +185,28 @@ export async function runScan(
   }
 
   // 6. Safe open-redirect / SSRF canary follow-ups (in-scope host + url= params).
-  const ssrfUrls = collectSsrfRedirectFollowUps(probes);
+  //    When canaryBaseUrl is set, also inject Worker OAST blind-SSRF canaries.
+  const ssrfUrls = collectSsrfRedirectFollowUps(probes, { canaryBase: canaryBase || undefined });
   const { allowed: allowedSsrf } = partitionByScope(ssrfUrls.map((x) => x.url), req.scope);
   const allowedSsrfSet = new Set(allowedSsrf);
   const freshSsrf = ssrfUrls.filter((x) => allowedSsrfSet.has(x.url) && !probes.some((p) => p.url === x.url));
   if (freshSsrf.length) {
+    for (const item of freshSsrf) {
+      if (item.mode === 'blind' && item.canaryToken && item.canaryUrl) {
+        blindCanaries.push({
+          token: item.canaryToken,
+          canaryUrl: item.canaryUrl,
+          probeUrl: item.url,
+        });
+        await putCanaryPending(env.STORMFORGE_KV, {
+          token: item.canaryToken,
+          scanId,
+          program: req.scope.program,
+          probeUrl: item.url,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
     await mapWithConcurrency(freshSsrf, concurrency, async (item) => {
       const p = await client.probe(item.url, {
         headers: { origin: PROBE_ORIGIN, accept: 'text/html, application/json;q=0.9, */*;q=0.8' },
@@ -181,6 +217,22 @@ export async function runScan(
       probes.push(p);
       probed++;
       onProgress?.({ phase: 'ssrf-redirect-probe', probed, total: probes.length, findings: 0 });
+    });
+  }
+
+  // 6b. Confirm blind SSRF via OAST canary hits (short settle for async fetches).
+  if (blindCanaries.length) {
+    await sleep(1500);
+    for (const c of blindCanaries) {
+      const hit = await getCanaryHit(env.STORMFORGE_KV, c.token);
+      if (!hit) continue;
+      blindConfirmedFindings.push(makeBlindSsrfFinding(c.probeUrl, c.canaryUrl, hit));
+    }
+    onProgress?.({
+      phase: 'ssrf-canary-confirm',
+      probed,
+      total: probes.length,
+      findings: blindConfirmedFindings.length,
     });
   }
 
@@ -342,6 +394,42 @@ export async function runScan(
     });
   }
 
+  // 16b. Session dual-pass: anonymous re-probe of auth surfaces + neighbor IDOR IDs.
+  if (sessionActive) {
+    const dualPassTargets = buildProbeUrls(allowed, AUTH_IDOR_PATHS);
+    const { allowed: dualAllowed } = partitionByScope(dualPassTargets, req.scope);
+    await mapWithConcurrency(dualAllowed.slice(0, 36), concurrency, async (url) => {
+      const p = await client.probe(url, {
+        headers: { origin: PROBE_ORIGIN },
+        skipDefaultHeaders: true,
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+      onProgress?.({ phase: 'anon-dual-pass', probed, total: probes.length, findings: 0 });
+    });
+
+    // Neighbor object IDs for horizontal IDOR under the authenticated session.
+    const neighborUrls = new Set<string>();
+    for (const p of probes) {
+      if (p.error || p.status < 200 || p.status >= 300) continue;
+      for (const n of buildNeighborIdUrls(p.finalUrl ?? p.url)) neighborUrls.add(n);
+    }
+    const { allowed: allowedNeighbors } = partitionByScope([...neighborUrls], req.scope);
+    const freshNeighbors = allowedNeighbors
+      .filter((u) => !probes.some((p) => p.url === u))
+      .slice(0, 24);
+    if (freshNeighbors.length) {
+      await mapWithConcurrency(freshNeighbors, concurrency, async (url) => {
+        const p = await client.probe(url, { headers: { origin: PROBE_ORIGIN } });
+        attachSignals(p);
+        probes.push(p);
+        probed++;
+        onProgress?.({ phase: 'auth-idor-neighbors', probed, total: probes.length, findings: 0 });
+      });
+    }
+  }
+
   // 17. Run detection checks over all probes.
   const dedup = new Map<string, Finding>();
   for (const probe of probes) {
@@ -349,6 +437,8 @@ export async function runScan(
       dedup.set(f.id, f);
     }
   }
+  for (const f of blindConfirmedFindings) dedup.set(f.id, f);
+  for (const f of findHorizontalIdor(probes)) dedup.set(f.id, f);
 
   // 18. Autonomy second pass: findings → more paths → probe → re-check.
   let findings = [...dedup.values()];
@@ -457,14 +547,19 @@ export function collectInjectionFollowUps(probes: ProbeResult[]): string[] {
 
 export interface SsrfFollowUp {
   url: string;
-  mode: 'redirect' | 'ssrf';
+  mode: 'redirect' | 'ssrf' | 'blind';
+  canaryToken?: string;
+  canaryUrl?: string;
 }
 
 /** Build open-redirect + SSRF canary follow-ups (capped). */
-export function collectSsrfRedirectFollowUps(probes: ProbeResult[]): SsrfFollowUp[] {
+export function collectSsrfRedirectFollowUps(
+  probes: ProbeResult[],
+  opts?: { canaryBase?: string },
+): SsrfFollowUp[] {
   const out: SsrfFollowUp[] = [];
   const seen = new Set<string>();
-  let budget = 20;
+  let budget = 24;
   for (const p of probes) {
     if (budget <= 0) break;
     if (!shouldProbeSsrfRedirect(p)) continue;
@@ -476,7 +571,12 @@ export function collectSsrfRedirectFollowUps(probes: ProbeResult[]): SsrfFollowU
     } catch {
       /* keep */
     }
-    const built = buildSsrfRedirectProbeUrls(cleanBase, 2);
+    const token = opts?.canaryBase ? newCanaryToken() : undefined;
+    const canaryUrl = token && opts?.canaryBase ? buildCanaryUrl(opts.canaryBase, token) : undefined;
+    const built = buildSsrfRedirectProbeUrls(cleanBase, {
+      maxParams: 2,
+      blindCanaryUrl: canaryUrl,
+    });
     for (const url of built.openRedirect) {
       if (budget <= 0) break;
       if (seen.has(url)) continue;
@@ -489,6 +589,13 @@ export function collectSsrfRedirectFollowUps(probes: ProbeResult[]): SsrfFollowU
       if (seen.has(url)) continue;
       seen.add(url);
       out.push({ url, mode: 'ssrf' });
+      budget--;
+    }
+    for (const url of built.blind) {
+      if (budget <= 0) break;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push({ url, mode: 'blind', canaryToken: token, canaryUrl });
       budget--;
     }
   }
@@ -835,4 +942,8 @@ function clampNumber(raw: string, fallback: number, min: number, max: number): n
   const n = Number(raw);
   if (Number.isNaN(n)) return fallback;
   return Math.max(min, Math.min(max, n));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }

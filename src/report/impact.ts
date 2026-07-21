@@ -13,7 +13,7 @@ export function impactForFinding(f: Finding): string {
     return 'Missing or ineffective authorization on authenticated/admin surfaces can grant anonymous callers access to account data or privileged operations.';
   }
   if (f.cwe === 'CWE-347') {
-    return 'Acceptance or issuance of weak JWTs (alg=none / empty signature) can allow forged identity claims and full authentication bypass.';
+    return 'Acceptance or issuance of weak JWTs (alg=none / empty signature / jku·x5u·URL-kid) can allow forged identity claims, key injection, and full authentication bypass.';
   }
   if (f.cwe === 'CWE-798') {
     return 'Hard-coded or publicly served credentials can be extracted by anyone who can fetch the asset, enabling cloud takeover, data-store access, or abuse of third-party APIs until the secret is rotated.';

@@ -48,14 +48,18 @@ export const weakJwtCheck: Check = {
               'Decode the header (base64url) and confirm the weak alg / empty signature / dangerous kid — do not use the token against production beyond authorized testing',
             ],
             remediation:
-              'Reject alg=none and empty signatures server-side; pin allowed algorithms (e.g. RS256/ES256); validate kid against an allowlist; rotate any exposed signing material.',
+              'Reject alg=none and empty signatures; pin allowed algorithms (e.g. RS256/ES256); never honor jku/x5u/URL-kid from untrusted tokens — pin JWKS/certs locally; allowlist kid values; rotate exposed signing material.',
             cwe: 'CWE-347',
             references: [
               'https://cwe.mitre.org/data/definitions/347.html',
               'https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries/',
               'https://portswigger.net/web-security/jwt',
             ],
-            needsManualReview: issue.kind === 'path-traversal-kid',
+            needsManualReview:
+              issue.kind === 'path-traversal-kid' ||
+              issue.kind === 'jku-url' ||
+              issue.kind === 'x5u-url' ||
+              issue.kind === 'url-kid',
             discoveredAt: new Date().toISOString(),
           });
         }
@@ -78,6 +82,12 @@ function weakTitle(kind: WeakJwtIssue['kind']): string {
       return 'JWT kid contains path-traversal characters';
     case 'alg-empty':
       return 'JWT with empty alg header';
+    case 'jku-url':
+      return 'JWT with attacker-controllable jku (remote JWKS URL)';
+    case 'x5u-url':
+      return 'JWT with attacker-controllable x5u (remote certificate URL)';
+    case 'url-kid':
+      return 'JWT kid is a remote URL (key injection / SSRF risk)';
     default: {
       const _exhaustive: never = kind;
       return `Weak JWT (${_exhaustive})`;

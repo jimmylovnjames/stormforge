@@ -15,7 +15,10 @@ export type WeakJwtKind =
   | 'empty-signature'
   | 'two-segment-unsigned'
   | 'path-traversal-kid'
-  | 'alg-empty';
+  | 'alg-empty'
+  | 'jku-url'
+  | 'x5u-url'
+  | 'url-kid';
 
 export interface WeakJwtIssue {
   kind: WeakJwtKind;
@@ -97,6 +100,31 @@ export function analyzeWeakJwt(token: string): WeakJwtIssue[] {
       kind: 'path-traversal-kid',
       severity: 'high',
       detail: `JWT kid contains path-traversal characters: "${kid.slice(0, 64)}"`,
+    });
+  }
+  if (typeof kid === 'string' && /^https?:\/\//i.test(kid)) {
+    issues.push({
+      kind: 'url-kid',
+      severity: 'high',
+      detail: `JWT kid is a remote URL (SSRF / key injection risk): "${kid.slice(0, 96)}"`,
+    });
+  }
+
+  const jku = parsed.header.jku;
+  if (typeof jku === 'string' && /^https?:\/\//i.test(jku)) {
+    issues.push({
+      kind: 'jku-url',
+      severity: 'critical',
+      detail: `JWT header declares jku="${jku.slice(0, 96)}" — attacker-controlled JWKS URL can forge tokens if trusted.`,
+    });
+  }
+
+  const x5u = parsed.header.x5u;
+  if (typeof x5u === 'string' && /^https?:\/\//i.test(x5u)) {
+    issues.push({
+      kind: 'x5u-url',
+      severity: 'critical',
+      detail: `JWT header declares x5u="${x5u.slice(0, 96)}" — attacker-controlled certificate URL can forge tokens if trusted.`,
     });
   }
 

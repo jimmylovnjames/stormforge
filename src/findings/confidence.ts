@@ -11,11 +11,14 @@ const CANARY_CHECKS = new Set([
   'path-traversal',
   'xss-injection',
   'ssrf-open-redirect',
+  'ssrf-blind-canary',
   'crlf-header-injection',
   'prototype-pollution',
   'weak-jwt',
   'secret-exposure',
   'cloud-bucket-exposure',
+  'auth-access-control',
+  'auth-differential',
 ]);
 
 const TOOL_CONFIRMED = new Set([
