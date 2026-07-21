@@ -4,6 +4,7 @@ import { corsCheck, PROBE_ORIGIN } from '../src/detect/checks/cors.js';
 import { exposedFilesCheck } from '../src/detect/checks/exposed-files.js';
 import { cookiesCheck, splitSetCookie } from '../src/detect/checks/cookies.js';
 import { versionCveCheck } from '../src/detect/checks/version-cve.js';
+import { apiSchemaExposureCheck } from '../src/detect/checks/api-schema-exposure.js';
 import { scanSecrets } from '../src/recon/secrets.js';
 import type { ProbeResult, Scope, CheckContext } from '../src/types.js';
 
@@ -105,5 +106,85 @@ describe('scanSecrets', () => {
     expect(f).toHaveLength(1);
     expect(f[0].evidence).not.toContain('AKIAIOSFODNN7EXAMPLE');
     expect(f[0].needsManualReview).toBe(true);
+  });
+});
+
+describe('apiSchemaExposureCheck', () => {
+  it('flags OpenAPI 3 JSON with paths as high', () => {
+    const body = JSON.stringify({
+      openapi: '3.0.3',
+      info: { title: 'Internal API', version: '1.0.0' },
+      paths: { '/admin/users': { get: { summary: 'List users' } } },
+    });
+    const f = apiSchemaExposureCheck.run(
+      probe({ url: 'https://a.x.com/openapi.json', headers: { 'content-type': 'application/json' }, body }),
+      ctx,
+    );
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('high');
+    expect(f[0].title).toContain('OpenAPI 3');
+  });
+
+  it('flags Swagger 2.0 specs', () => {
+    const body = '{"swagger":"2.0","info":{"title":"t","version":"1"},"paths":{"/x":{}}}';
+    const f = apiSchemaExposureCheck.run(probe({ url: 'https://a.x.com/swagger.json', body }), ctx);
+    expect(f).toHaveLength(1);
+    expect(f[0].title).toContain('Swagger 2.0');
+  });
+
+  it('does not flag unrelated JSON that mentions openapi in a string', () => {
+    const f = apiSchemaExposureCheck.run(
+      probe({ body: '{"message":"see openapi docs","code":200}' }),
+      ctx,
+    );
+    expect(f).toHaveLength(0);
+  });
+
+  it('flags GraphQL introspection payloads as high without manual review', () => {
+    const body = JSON.stringify({
+      data: {
+        __schema: {
+          queryType: { name: 'Query' },
+          types: [{ name: 'User' }, { name: 'Mutation' }],
+        },
+      },
+    });
+    const f = apiSchemaExposureCheck.run(probe({ url: 'https://a.x.com/graphql', body }), ctx);
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('high');
+    expect(f[0].needsManualReview).toBe(false);
+  });
+
+  it('flags GraphiQL HTML explorer', () => {
+    const f = apiSchemaExposureCheck.run(
+      probe({
+        url: 'https://a.x.com/graphiql',
+        headers: { 'content-type': 'text/html' },
+        body: '<!doctype html><title>GraphiQL</title><script src="https://cdn.jsdelivr.net/npm/graphiql/graphiql.min.js"></script>',
+      }),
+      ctx,
+    );
+    expect(f).toHaveLength(1);
+    expect(f[0].title).toContain('GraphiQL');
+    expect(f[0].severity).toBe('high');
+  });
+
+  it('flags Swagger UI HTML as medium', () => {
+    const f = apiSchemaExposureCheck.run(
+      probe({
+        url: 'https://a.x.com/swagger-ui/',
+        headers: { 'content-type': 'text/html' },
+        body: '<div id="swagger-ui"></div><script>SwaggerUIBundle({url:"/swagger.json"})</script>',
+      }),
+      ctx,
+    );
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('medium');
+    expect(f[0].needsManualReview).toBe(true);
+  });
+
+  it('ignores non-200 responses', () => {
+    const body = '{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{}}';
+    expect(apiSchemaExposureCheck.run(probe({ status: 404, body }), ctx)).toHaveLength(0);
   });
 });
