@@ -62,6 +62,11 @@ export default {
         return await handleReport(decodeURIComponent(reportMatch[1]), env);
       }
 
+      const draftsMatch = pathname.match(/^\/api\/drafts\/([^/]+)$/);
+      if (request.method === 'GET' && draftsMatch) {
+        return await handleListDrafts(decodeURIComponent(draftsMatch[1]), env);
+      }
+
       if (request.method === 'GET' && pathname === '/api/checks') {
         return json({ checks: listChecks().map((c) => ({ id: c.id, title: c.title, cwe: c.cwe })) });
       }
@@ -382,6 +387,34 @@ async function handleReport(program: string, env: Env): Promise<Response> {
   };
   const markdown = draftDisclosure(findings, scope);
   return new Response(markdown, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+}
+
+async function handleListDrafts(program: string, env: Env): Promise<Response> {
+  const list = await env.STORMFORGE_KV.list({ prefix: `draft:${program}:` });
+  const drafts = [];
+  for (const key of list.keys.slice(0, 50)) {
+    const raw = await env.STORMFORGE_KV.get(key.name);
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw) as {
+        scanId: string;
+        program: string;
+        createdAt: string;
+        findingCount: number;
+        markdown: string;
+      };
+      drafts.push({
+        key: key.name,
+        scanId: parsed.scanId,
+        createdAt: parsed.createdAt,
+        findingCount: parsed.findingCount,
+        markdownPreview: parsed.markdown.slice(0, 400),
+      });
+    } catch {
+      /* skip bad draft */
+    }
+  }
+  return json({ program, drafts, total: drafts.length });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

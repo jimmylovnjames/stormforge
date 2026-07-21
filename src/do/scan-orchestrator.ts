@@ -6,6 +6,8 @@ import type { Env, ScanReport, ScanRequest } from '../types.js';
 import { runScan } from '../engine/scanner.js';
 import { FindingsStore } from '../findings/store.js';
 import { dispatchFollowUpsFromFindings } from '../planning/dispatch-followups.js';
+import { highImpactFindings, shouldAutoDraft } from '../findings/prioritize.js';
+import { draftDisclosure } from '../report/drafter.js';
 
 interface ScanState {
   status: 'idle' | 'running' | 'done' | 'error';
@@ -14,6 +16,7 @@ interface ScanState {
   total: number;
   findings: number;
   followUpsDispatched?: number;
+  draftStored?: boolean;
   report?: ScanReport;
   error?: string;
   startedAt?: string;
@@ -65,6 +68,25 @@ export class ScanOrchestrator {
         { scanId: report.scanId, maxTasks: 8 },
       );
 
+      // Auto-draft a disclosure when high/critical hits land (operator still reviews).
+      let draftStored = false;
+      if (shouldAutoDraft(report.findings) && this.env.STORMFORGE_KV) {
+        const impactful = highImpactFindings(report.findings);
+        const markdown = draftDisclosure(impactful, req.scope);
+        await this.env.STORMFORGE_KV.put(
+          `draft:${req.scope.program}:${report.scanId}`,
+          JSON.stringify({
+            scanId: report.scanId,
+            program: req.scope.program,
+            createdAt: new Date().toISOString(),
+            findingCount: impactful.length,
+            markdown,
+          }),
+          { expirationTtl: 7776000 },
+        );
+        draftStored = true;
+      }
+
       this.state = {
         status: 'done',
         phase: 'complete',
@@ -72,6 +94,7 @@ export class ScanOrchestrator {
         total: report.targetsProbed,
         findings: report.findings.length,
         followUpsDispatched,
+        draftStored,
         report,
         startedAt: this.state.startedAt,
       };

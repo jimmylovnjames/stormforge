@@ -2,6 +2,7 @@
 
 import type { Env, Finding, Scope, ToolTask } from '../types.js';
 import { planFollowUpTasks } from './vuln-planner.js';
+import { prioritizeFindings } from '../findings/prioritize.js';
 
 type FindingLike = {
   checkId: string;
@@ -9,6 +10,7 @@ type FindingLike = {
   target: string;
   title: string;
   evidence?: string;
+  needsManualReview?: boolean;
 };
 
 /**
@@ -22,7 +24,11 @@ export async function dispatchFollowUpsFromFindings(
   opts: { scanId: string; maxTasks?: number } = { scanId: 'unknown' },
 ): Promise<number> {
   if (!env.STORMFORGE_KV || !findings.length) return 0;
-  const follow = planFollowUpTasks(findings, scope, {
+  // Rank so critical injection/takeover findings claim the follow-up budget first.
+  const ranked = isFindingArray(findings)
+    ? prioritizeFindings(findings)
+    : [...findings].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+  const follow = planFollowUpTasks(ranked, scope, {
     scanId: opts.scanId,
     maxTasks: opts.maxTasks ?? 8,
   });
@@ -48,6 +54,14 @@ export async function dispatchFollowUpsFromFindings(
   }
   await env.STORMFORGE_KV.put('task_queue:pending', JSON.stringify(queue));
   return dispatched;
+}
+
+function isFindingArray(findings: FindingLike[] | Finding[]): findings is Finding[] {
+  return findings.length > 0 && typeof (findings[0] as Finding).id === 'string';
+}
+
+function severityRank(s: string): number {
+  return ({ info: 0, low: 1, medium: 2, high: 3, critical: 4 } as Record<string, number>)[s] ?? 0;
 }
 
 async function readQueue(env: Env): Promise<string[]> {
