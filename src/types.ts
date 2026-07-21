@@ -188,6 +188,12 @@ export interface ToolTask {
   leaseExpiresAt?: string;
   /** How many evolved follow-up hops produced this task (cap re-dispatch). */
   followUpDepth?: number;
+  /** Times this task has been executed/leased and ended in failure or lease-expiry. */
+  attempts?: number;
+  /** Earliest ISO time this task may be leased again (retry backoff gate). */
+  nextEligibleAt?: string;
+  /** Last failure detail (stderr/exit), retained for retry diagnostics. */
+  lastError?: string;
 }
 
 export interface ToolTaskResult {
@@ -208,6 +214,12 @@ export interface ToolTaskResult {
 
 export interface Env {
   SCAN_ORCHESTRATOR: DurableObjectNamespace;
+  /**
+   * Singleton coordinator DO that drives the 24/7 autonomy loop (lease reclaim,
+   * retry/backoff, GC, metrics) via a self-rescheduling alarm. Optional so unit
+   * tests that only exercise queue/maintenance logic need not bind it.
+   */
+  SWARM_COORDINATOR?: DurableObjectNamespace;
   STORMFORGE_KV: KVNamespace;
   MAX_RPS: string;
   MAX_CONCURRENCY: string;
@@ -222,4 +234,17 @@ export interface Env {
    * Production must leave this unset/false — auth fails closed.
    */
   ALLOW_INSECURE_EXECUTOR?: string;
+  // ─── Autonomy tunables (see src/tasks/config.ts for defaults) ───────────────
+  /** Coordinator alarm interval, seconds (default 30). */
+  SWARM_TICK_SEC?: string;
+  /** "false"/"0"/"off" pauses the self-rescheduling autopilot (default on). */
+  SWARM_AUTOPILOT?: string;
+  /** Max task attempts before permanent failure (default 4). */
+  TASK_MAX_ATTEMPTS?: string;
+  /** Retry backoff base, seconds (default 30). */
+  TASK_RETRY_BASE_SEC?: string;
+  /** Retry backoff cap, seconds (default 900). */
+  TASK_RETRY_CAP_SEC?: string;
+  /** Terminal-task GC age, seconds (default 21600 = 6h). */
+  TASK_GC_TTL_SEC?: string;
 }

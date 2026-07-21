@@ -8,9 +8,22 @@ compatibility_flags = ["nodejs_compat"]
 name = "SCAN_ORCHESTRATOR"
 class_name = "ScanOrchestrator"
 
+# Singleton coordinator that drives the 24/7 autonomy loop via a self-scheduling alarm.
+[[durable_objects.bindings]]
+name = "SWARM_COORDINATOR"
+class_name = "SwarmCoordinator"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ScanOrchestrator"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SwarmCoordinator"]
+
+# --- Cron watchdog: keeps the coordinator alarm armed + runs a fail-safe tick ---
+[triggers]
+crons = ["*/1 * * * *"]
 
 # --- KV: findings + scope + task queue persistence ---
 [[kv_namespaces]]
@@ -25,6 +38,17 @@ MAX_RPS = "5"
 MAX_CONCURRENCY = "8"
 # "detect" = passive checks. "hybrid" = passive + dispatches to executor.
 SCAN_MODE = "hybrid"
+# --- Autonomy loop tunables (see src/tasks/config.ts) ---
+# Coordinator alarm cadence (seconds) between maintenance ticks.
+SWARM_TICK_SEC = "30"
+# Set "false" to pause the self-rescheduling autopilot without redeploying code.
+SWARM_AUTOPILOT = "true"
+# Task retry policy: attempts, exponential backoff base, and cap (seconds).
+TASK_MAX_ATTEMPTS = "4"
+TASK_RETRY_BASE_SEC = "30"
+TASK_RETRY_CAP_SEC = "900"
+# Terminal (done/error/timeout) tasks are GC'd after this age (seconds, 6h).
+TASK_GC_TTL_SEC = "21600"
 # LLM planner for intelligent path/vuln prioritization.
 LLM_PLANNER_ENDPOINT = ""
 LLM_PLANNER_MODEL = ""
