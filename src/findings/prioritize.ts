@@ -21,6 +21,7 @@ const BOOST: Record<string, number> = {
   'crlf-header-injection': 22,
   'xss-injection': 22,
   'cache-deception': 20,
+  'cache-poisoning': 32,
   'cors-misconfig': 15,
   'host-header-injection': 15,
   'debug-error-disclosure': 10,

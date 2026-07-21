@@ -24,6 +24,7 @@ import { prototypePollutionCheck } from './checks/prototype-pollution.js';
 import { hppCheck } from './checks/hpp.js';
 import { cloudBucketCheck } from './checks/cloud-bucket.js';
 import { cacheDeceptionCheck } from './checks/cache-deception.js';
+import { cachePoisoningCheck } from './checks/cache-poisoning.js';
 import { subdomainTakeoverCheck } from './checks/subdomain-takeover.js';
 import { debugDisclosureCheck } from './checks/debug-disclosure.js';
 import { oauthMisconfigCheck } from './checks/oauth.js';
@@ -53,6 +54,7 @@ const REGISTRY: Check[] = [
   hppCheck,
   cloudBucketCheck,
   cacheDeceptionCheck,
+  cachePoisoningCheck,
   subdomainTakeoverCheck,
   debugDisclosureCheck,
   oauthMisconfigCheck,

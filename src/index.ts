@@ -303,9 +303,24 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
 
     const crawlUrls = extractCrawlUrls(task.tool, body.result.stdout, 40);
     if (crawlUrls.length) {
+      let canaryBaseUrl: string | undefined;
+      try {
+        canaryBaseUrl = new URL(request.url).origin;
+      } catch {
+        /* leave unset */
+      }
+      let session: import('./types.js').ScanSession | undefined;
+      try {
+        const rawSession = await env.STORMFORGE_KV.get(`session:${task.scope.program}`);
+        if (rawSession) session = JSON.parse(rawSession) as import('./types.js').ScanSession;
+      } catch {
+        /* ignore bad session */
+      }
       const rescan = await enqueueWorkerRescan(env, task.scope, crawlUrls, {
         parentScanId: task.scanId,
         sourceTool: task.tool,
+        canaryBaseUrl,
+        session,
         maxTargets: 25,
       });
       if (rescan) workerRescans = 1;
@@ -443,6 +458,15 @@ async function handleStartScan(request: Request, env: Env): Promise<Response> {
 
   const validationError = validateScanRequest(req);
   if (validationError) return json({ error: validationError }, 400);
+
+  // Persist session for crawl-driven re-scans (never logged).
+  if (req.session && req.scope.program) {
+    await env.STORMFORGE_KV.put(
+      `session:${req.scope.program}`,
+      JSON.stringify(req.session),
+      { expirationTtl: 86_400 },
+    );
+  }
 
   const { refused } = partitionByScope(req.targets, req.scope);
   if (refused.length > 0) {

@@ -133,19 +133,112 @@ async function saveTactics(env: Env, program: string, newTactics: string[]): Pro
   if (!env.STORMFORGE_KV || !newTactics?.length) return;
   const key = `tactics:${program}`;
   const existing = await loadTactics(env, program);
-  const merged = [...new Set([...existing, ...newTactics])].slice(0, 200);
+  const merged = mergeTactics(existing, newTactics, 200);
   await env.STORMFORGE_KV.put(key, JSON.stringify(merged), { expirationTtl: 7776000 });
 }
 
-function heuristicPlan(context: any, priorTactics: string[] = []): PlannerSuggestion {
-  const seen = new Set(context.seenPaths);
+/** Persist path tactics that actually produced high-signal findings. */
+export async function recordWinningTactics(
+  env: Env,
+  program: string,
+  findings: Finding[],
+): Promise<string[]> {
+  const won = extractWinningTactics(findings);
+  if (!won.length) return [];
+  await saveTactics(env, program, won);
+  return won;
+}
+
+/** Pathnames from submit-ready / high-severity findings worth remembering. */
+export function extractWinningTactics(findings: Finding[]): string[] {
+  const out: string[] = [];
+  for (const f of findings) {
+    if (f.severity !== 'critical' && f.severity !== 'high') continue;
+    if (f.checkId.startsWith('recon-') || f.checkId === 'security-headers') continue;
+    if (!(f.submitReady || f.needsManualReview === false || f.severity === 'critical' || f.severity === 'high')) {
+      continue;
+    }
+    try {
+      const path = new URL(f.target.includes('://') ? f.target : `https://${f.target}`).pathname;
+      if (path && path !== '/' && path.length < 120) out.push(path);
+    } catch {
+      /* skip */
+    }
+  }
+  return [...new Set(out)].slice(0, 40);
+}
+
+export function mergeTactics(existing: string[], incoming: string[], cap = 200): string[] {
+  return [...new Set([...existing, ...incoming].filter((p) => typeof p === 'string' && p.startsWith('/')))].slice(
+    0,
+    cap,
+  );
+}
+
+/** Derive sibling paths from parameterized endpoints discovered in recon. */
+export function pathsFromParamEndpoints(paramEndpoints: string[]): string[] {
+  const out: string[] = [];
+  for (const pe of paramEndpoints) {
+    try {
+      const u = new URL(pe, 'https://example.invalid');
+      const path = u.pathname;
+      if (!path || path === '/') continue;
+      out.push(path);
+      // Sibling guesses: /search → /api/search
+      if (!path.startsWith('/api/')) out.push(`/api${path}`);
+      if (path.startsWith('/api/') && !path.includes('/v1/')) {
+        out.push(path.replace(/^\/api\//, '/api/v1/'));
+      }
+    } catch {
+      const pathOnly = pe.split('?')[0] ?? '';
+      if (pathOnly.startsWith('/')) out.push(pathOnly);
+    }
+  }
+  return [...new Set(out)].slice(0, 20);
+}
+
+export function heuristicPlan(
+  context: {
+    products?: string[];
+    seenPaths?: string[];
+    statuses?: Record<string, number>;
+    interestingHeaders?: string[];
+    paramEndpoints?: string[];
+  },
+  priorTactics: string[] = [],
+): PlannerSuggestion {
+  const seen = new Set(context.seenPaths ?? []);
   const candidates = [...priorTactics];
 
   candidates.push(
-    '/api/v1/users/1', '/api/v2/users/me', '/api/admin/users',
-    '/internal', '/debug', '/graphql', '/.env', '/.git/config',
-    '/actuator/env', '/swagger.json', '/_ignition/health-check'
+    '/api/v1/users/1',
+    '/api/v2/users/me',
+    '/api/admin/users',
+    '/internal',
+    '/debug',
+    '/graphql',
+    '/.env',
+    '/.git/config',
+    '/actuator/env',
+    '/swagger.json',
+    '/_ignition/health-check',
   );
+
+  candidates.push(...pathsFromParamEndpoints(context.paramEndpoints ?? []));
+
+  const statuses = context.statuses ?? {};
+  if ((statuses['401'] ?? 0) + (statuses['403'] ?? 0) > 0) {
+    candidates.push(
+      '/admin',
+      '/admin/users',
+      '/api/v1/me',
+      '/api/v1/users',
+      '/api/v1/admin',
+      '/dashboard',
+      '/manage',
+      '/internal/admin',
+    );
+  }
 
   const blob = (context.products || []).join(' ').toLowerCase();
   if (blob.includes('php')) candidates.push('/wp-json/wp/v2/users', '/phpinfo.php');
@@ -154,8 +247,14 @@ function heuristicPlan(context: any, priorTactics: string[] = []): PlannerSugges
   }
   if (blob.includes('spring') || blob.includes('java')) candidates.push('/actuator', '/jolokia');
   if (blob.includes('django')) candidates.push('/admin/', '/__debug__/');
+  if (
+    blob.includes('graphql') ||
+    (context.seenPaths ?? []).some((p) => /graphql|swagger|openapi/i.test(p))
+  ) {
+    candidates.push('/graphql', '/api/graphql', '/openapi.json', '/swagger.json');
+  }
 
-  const suggested = [...new Set(candidates)].filter(c => !seen.has(c)).slice(0, 30);
+  const suggested = [...new Set(candidates)].filter((c) => c.startsWith('/') && !seen.has(c)).slice(0, 30);
 
   return {
     suggestedPaths: suggested,
@@ -222,6 +321,7 @@ export function planPathsFromFindings(findings: Finding[]): PlannerSuggestion {
         break;
       case 'host-header-injection':
       case 'cache-deception':
+      case 'cache-poisoning':
         paths.push('/', '/login', '/reset-password', '/account', '/forgot-password', '/me', '/profile', '/api/v1/me');
         break;
       case 'subdomain-takeover':

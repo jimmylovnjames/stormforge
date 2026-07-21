@@ -318,8 +318,8 @@ export function planFollowUpTasks(
       }
     }
 
-    // SQLi / CRLF / PP → prefer sqlmap + nuclei
-    if (/sql-injection|crlf-header|prototype-pollution/i.test(f.checkId)) {
+    // SQLi / CRLF / PP / HPP → prefer sqlmap + nuclei
+    if (/sql-injection|crlf-header|prototype-pollution|http-parameter-pollution/i.test(f.checkId)) {
       if (/[?&]\w+=/.test(target)) {
         push({
           tool: 'sqlmap',
@@ -329,6 +329,67 @@ export function planFollowUpTasks(
           rationale: `Deepen injection finding ${f.checkId} with sqlmap`,
         });
       }
+    }
+
+    // Weak JWT / OAuth → nuclei exposures + crawl auth surface
+    if (/weak-jwt|oauth/i.test(f.checkId)) {
+      push({
+        tool: 'nuclei',
+        target,
+        args: {
+          flags: '-severity critical,high,medium -silent -c 20',
+          templates: 'exposures,token-spray,misconfiguration',
+        },
+        timeoutSec: 360,
+        rationale: `Nuclei exposures after ${f.checkId}`,
+      });
+      push({
+        tool: 'katana',
+        target,
+        args: { flags: '-silent -d 2 -jc' },
+        timeoutSec: 120,
+        rationale: `Crawl auth surface after ${f.checkId}`,
+      });
+    }
+
+    // Cache deception / poisoning / host-header → nuclei misconfiguration
+    if (/cache-deception|cache-poisoning|host-header/i.test(f.checkId)) {
+      push({
+        tool: 'nuclei',
+        target,
+        args: {
+          flags: '-silent -c 20',
+          templates: 'misconfiguration,vulnerabilities',
+        },
+        timeoutSec: 360,
+        rationale: `Nuclei misconfiguration after ${f.checkId}`,
+      });
+    }
+
+    // Auth differential / horizontal IDOR → ffuf neighbor IDs + httpx
+    if (/auth-differential|auth-access/i.test(f.checkId)) {
+      const base = originOf(target);
+      if (base) {
+        push({
+          tool: 'ffuf',
+          target: target.includes('/users/')
+            ? target.replace(/\/users\/\d+/, '/users/FUZZ')
+            : `${base}/api/v1/users/FUZZ`,
+          args: {
+            flags: '-mc 200 -t 10 -s',
+            wordlist: '1,2,3,4,5,10,100',
+          },
+          timeoutSec: 180,
+          rationale: `Neighbor ID fuzz after ${f.checkId}`,
+        });
+      }
+      push({
+        tool: 'httpx',
+        target,
+        args: { flags: '-silent -status-code -title -tech-detect' },
+        timeoutSec: 60,
+        rationale: `Re-fingerprint auth surface after ${f.checkId}`,
+      });
     }
 
     // Subdomain enum / takeover → nuclei takeover templates

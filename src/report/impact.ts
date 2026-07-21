@@ -73,6 +73,9 @@ export function impactForFinding(f: Finding): string {
     return 'Public object-store listings expose file keys and often leak backups, credentials, source archives, and personal data at scale.';
   }
   if (f.cwe === 'CWE-444') {
+    if (f.checkId === 'cache-poisoning') {
+      return 'Unkeyed-header web cache poisoning lets attackers store malicious responses in shared caches, leading to account takeover, content injection, or phishing on a trusted origin.';
+    }
     return 'Web cache deception can store a victim’s authenticated response under a static URL, letting attackers retrieve private account data from shared caches.';
   }
 

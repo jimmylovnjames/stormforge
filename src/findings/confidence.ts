@@ -20,6 +20,7 @@ const CANARY_CHECKS = new Set([
   'cloud-bucket-exposure',
   'auth-access-control',
   'auth-differential',
+  'cache-poisoning',
 ]);
 
 const TOOL_CONFIRMED = new Set([

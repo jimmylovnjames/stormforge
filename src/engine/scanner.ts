@@ -80,11 +80,15 @@ import {
   buildCacheDeceptionUrls,
   shouldProbeCacheDeception,
 } from '../recon/cache-deception-probes.js';
+import {
+  buildCachePoisonVariants,
+  shouldProbeCachePoison,
+} from '../recon/cache-poison-probes.js';
 import { DOH_ENDPOINT, parseDohResponse } from '../recon/takeover.js';
 import { runChecks } from '../detect/registry.js';
 import { PROBE_ORIGIN, corsBypassOriginFor } from '../detect/checks/cors.js';
 import { emptySummary } from '../findings/severity.js';
-import { planNextPaths, planPathsFromFindings } from '../planning/llm-planner.js';
+import { planNextPaths, planPathsFromFindings, recordWinningTactics } from '../planning/llm-planner.js';
 import { enrichFindings } from '../findings/confidence.js';
 import { harvestPathsFromProbe } from '../recon/url-harvest.js';
 
@@ -129,7 +133,7 @@ export async function runScan(
   });
 
   // 3. Advisory planning pass: probe a few extra suggested paths (still scope-gated).
-  const plan = await planNextPaths(probes, env);
+  const plan = await planNextPaths(probes, env, req.scope.program);
   if (plan.suggestedPaths.length) {
     const extraUrls = buildProbeUrls(allowed, plan.suggestedPaths);
     const { allowed: allowedExtra } = partitionByScope(extraUrls, req.scope);
@@ -411,6 +415,37 @@ export async function runScan(
     });
   }
 
+  // 14b. Unkeyed-header cache poisoning: poison GET then clean GET confirm.
+  const poisonItems = collectCachePoisonFollowUps(probes).slice(0, 6);
+  if (poisonItems.length) {
+    for (const item of poisonItems) {
+      const { allowed: poisonOk } = partitionByScope([item.url], req.scope);
+      if (!poisonOk.length) continue;
+      const poisoned = await client.probe(item.url, {
+        headers: {
+          origin: PROBE_ORIGIN,
+          accept: 'text/html, application/json;q=0.9, */*;q=0.5',
+          ...item.poisonHeaders,
+        },
+        redirect: false,
+      });
+      attachSignals(poisoned);
+      // Local annotation so the check can correlate canary → clean response.
+      poisoned.headers['x-stormforge-poison'] = item.canary;
+      probes.push(poisoned);
+      probed++;
+
+      const clean = await client.probe(item.url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'text/html, application/json;q=0.9, */*;q=0.5' },
+        redirect: false,
+      });
+      attachSignals(clean);
+      probes.push(clean);
+      probed++;
+      onProgress?.({ phase: 'cache-poison-probe', probed, total: probes.length, findings: 0 });
+    }
+  }
+
   // 15. DNS / subdomain-takeover lookups via DoH (scoped hosts only).
   const dnsProbes = await collectTakeoverDnsProbes(probes, req.scope, concurrency);
   for (const p of dnsProbes) {
@@ -522,20 +557,15 @@ export async function runScan(
           findings: findings.length,
         });
       });
-      // Canary refresh on newly discovered surfaces only.
+      // Canary refresh on newly discovered surfaces only (full collector suite).
       const newProbes = probes.slice(-fresh2.length);
-      const refreshUrls = [
-        ...collectInjectionFollowUps(newProbes),
-        ...collectSqlInjectionFollowUps(newProbes),
-        ...collectSsrfRedirectFollowUps(newProbes, {
-          canaryBase: canaryBase || undefined,
-        }).map((x) => x.url),
-        ...collectHppFollowUps(newProbes).map((x) => x.url),
-      ];
+      const refreshUrls = collectCanaryRefreshUrls(newProbes, {
+        canaryBase: canaryBase || undefined,
+      });
       const { allowed: allowedRefresh } = partitionByScope(refreshUrls, req.scope);
       const freshRefresh = allowedRefresh
         .filter((u) => !probes.some((p) => p.url === u))
-        .slice(0, 20);
+        .slice(0, 24);
       if (freshRefresh.length) {
         await mapWithConcurrency(freshRefresh, concurrency, async (url) => {
           const p = await client.probe(url, {
@@ -560,8 +590,9 @@ export async function runScan(
 
   onProgress?.({ phase: 'analyze', probed, total: probes.length, findings: findings.length });
 
-  // Assemble report (enrich with confidence / submitReady).
+  // Assemble report (enrich with confidence / submitReady) and persist winning tactics.
   findings = enrichFindings(findings);
+  await recordWinningTactics(env, req.scope.program, findings);
   const summary = emptySummary();
   for (const f of findings) summary[f.severity]++;
 
@@ -913,6 +944,64 @@ export function collectCacheDeceptionFollowUps(probes: ProbeResult[]): string[] 
       budget--;
     }
   }
+  return [...out];
+}
+
+export interface CachePoisonFollowUp {
+  url: string;
+  poisonHeaders: Record<string, string>;
+  canary: string;
+  kind: string;
+}
+
+export function collectCachePoisonFollowUps(probes: ProbeResult[]): CachePoisonFollowUp[] {
+  const out: CachePoisonFollowUp[] = [];
+  const seen = new Set<string>();
+  let budget = 8;
+  for (const p of probes) {
+    if (budget <= 0) break;
+    if (!shouldProbeCachePoison(p)) continue;
+    let cleanBase = p.finalUrl ?? p.url;
+    try {
+      const u = new URL(cleanBase);
+      u.search = '';
+      cleanBase = u.toString();
+    } catch {
+      /* keep */
+    }
+    for (const v of buildCachePoisonVariants(cleanBase, 2)) {
+      const key = `${v.url}|${v.kind}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(v);
+      budget--;
+      if (budget <= 0) break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Full canary refresh URL set for newly harvested surfaces.
+ * Aggregates injection/SQLi/SSRF/HPP/cmd/LFI/CRLF/PP/cache collectors.
+ */
+export function collectCanaryRefreshUrls(
+  probes: ProbeResult[],
+  opts?: { canaryBase?: string },
+): string[] {
+  const out = new Set<string>();
+  for (const u of collectInjectionFollowUps(probes)) out.add(u);
+  for (const u of collectSqlInjectionFollowUps(probes)) out.add(u);
+  for (const u of collectCommandInjectionFollowUps(probes)) out.add(u);
+  for (const u of collectPathTraversalFollowUps(probes)) out.add(u);
+  for (const u of collectCrlfFollowUps(probes)) out.add(u);
+  for (const u of collectPrototypePollutionFollowUps(probes)) out.add(u);
+  for (const u of collectCacheDeceptionFollowUps(probes)) out.add(u);
+  for (const item of collectSsrfRedirectFollowUps(probes, { canaryBase: opts?.canaryBase })) {
+    out.add(item.url);
+  }
+  for (const item of collectHppFollowUps(probes)) out.add(item.url);
+  for (const item of collectHostHeaderFollowUps(probes)) out.add(item.url);
   return [...out];
 }
 

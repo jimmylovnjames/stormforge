@@ -101,6 +101,11 @@ const BY_CHECK: Record<string, Omit<CvssEstimate, 'rating'>> = {
     score: 6.5,
     rationale: 'Cached authenticated content leak (needs victim visit)',
   },
+  'cache-poisoning': {
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N',
+    score: 8.1,
+    rationale: 'Unkeyed-header cache poison serves attacker content to victims',
+  },
   'host-header-injection': {
     vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:L/A:N',
     score: 7.1,
