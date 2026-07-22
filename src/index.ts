@@ -10,6 +10,7 @@ import { partitionByScope, assertInScope, evaluateScope } from './scope/scope-gu
 import { FindingsStore } from './findings/store.js';
 import { draftDisclosure } from './report/drafter.js';
 import { prioritizeFindings, draftTriageReport } from './findings/prioritize.js';
+import { deriveAttackChains } from './findings/attack-chains.js';
 import { OastStore } from './oast/store.js';
 import { pollAndCorrelate } from './oast/poller.js';
 import { oastConfigured, parseCollaborator } from './oast/collaborator.js';
@@ -78,6 +79,11 @@ export default {
       const triageMatch = pathname.match(/^\/api\/triage\/([^/]+)$/);
       if (request.method === 'GET' && triageMatch) {
         return await handleTriage(decodeURIComponent(triageMatch[1]), env, request);
+      }
+
+      const chainsMatch = pathname.match(/^\/api\/chains\/([^/]+)$/);
+      if (request.method === 'GET' && chainsMatch) {
+        return await handleChains(decodeURIComponent(chainsMatch[1]), env, request);
       }
 
       if (request.method === 'GET' && pathname === '/api/oast/status') {
@@ -471,7 +477,9 @@ async function handleReport(program: string, env: Env, request: Request): Promis
     outOfScope: [],
     authorized: true,
   };
-  const markdown = draftDisclosure(findings, scope, { submitReadyOnly, minSeverity });
+  // Fold correlated attack chains so composite narratives appear in disclosure drafts.
+  const withChains = [...findings, ...deriveAttackChains(findings)];
+  const markdown = draftDisclosure(withChains, scope, { submitReadyOnly, minSeverity });
   return new Response(markdown, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
 }
 
@@ -513,7 +521,10 @@ async function handleTriage(program: string, env: Env, request: Request): Promis
   const limitRaw = Number(url.searchParams.get('limit'));
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(500, Math.floor(limitRaw)) : undefined;
 
-  const result = prioritizeFindings(findings);
+  // Fold correlated attack chains into the queue so composites rank alongside
+  // (and usually above) their component findings.
+  const withChains = [...findings, ...deriveAttackChains(findings)];
+  const result = prioritizeFindings(withChains);
   let entries = readyOnly ? result.entries.filter((e) => e.submitReady) : result.entries;
   if (limit) entries = entries.slice(0, limit);
   const view = { total: result.total, submitReady: result.submitReady, entries };
@@ -523,6 +534,21 @@ async function handleTriage(program: string, env: Env, request: Request): Promis
     return new Response(md, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
   }
   return json({ program, ...view });
+}
+
+async function handleChains(program: string, env: Env, request: Request): Promise<Response> {
+  const store = new FindingsStore(env.STORMFORGE_KV);
+  const findings = await store.getAll(program);
+  const chains = deriveAttackChains(findings);
+  const url = new URL(request.url);
+  if (url.searchParams.get('format') === 'md') {
+    const scope: Scope = { program, platform: 'generic', inScope: [], outOfScope: [], authorized: true };
+    const md = chains.length
+      ? draftDisclosure(chains, scope)
+      : `# Attack chains — ${program}\n\nNo correlated attack chains derived yet.`;
+    return new Response(md, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+  }
+  return json({ program, count: chains.length, chains });
 }
 
 function validateScanRequest(req: ScanRequest): string | null {

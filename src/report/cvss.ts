@@ -77,6 +77,16 @@ const PROFILES: Record<string, Partial<CvssMetrics>> = {
   'oauth-misconfig': { C: 'H', UI: 'R' },
   // Subdomain takeover — attacker fully controls a host → Scope changed.
   'subdomain-takeover': { S: 'C', C: 'H', I: 'H' },
+
+  // Attack-chain composites (checkId = chain-<ruleId>) — escalated impact.
+  'chain-source-to-secret': { C: 'H', I: 'H' },
+  'chain-debug-to-rce': { C: 'H', I: 'H', A: 'H' },
+  'chain-oauth-token-theft': { C: 'H', UI: 'R' },
+  'chain-cors-cred-theft': { S: 'C', C: 'H', UI: 'R' },
+  'chain-ssrf-cloud-pivot': { S: 'C', C: 'H', I: 'L' },
+  'chain-takeover-cookie-theft': { S: 'C', C: 'H', UI: 'R' },
+  'chain-schema-idor': { C: 'H', I: 'L' },
+  'chain-cache-poison-auth': { C: 'H', UI: 'R' },
 };
 
 /** Default metrics derived from the qualitative severity band. */

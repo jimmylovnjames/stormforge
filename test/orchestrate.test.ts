@@ -46,6 +46,8 @@ describe('parseOrchestrateMessage', () => {
     expect(parseOrchestrateMessage('findings acme-h1').program).toBe('acme-h1');
     expect(parseOrchestrateMessage('show findings acme-h1').program).toBe('acme-h1');
     expect(parseOrchestrateMessage('report acme-h1').intent).toBe('report');
+    expect(parseOrchestrateMessage('chains acme-h1').intent).toBe('chains');
+    expect(parseOrchestrateMessage('chains acme-h1').program).toBe('acme-h1');
     expect(parseOrchestrateMessage('audit').intent).toBe('audit');
   });
 

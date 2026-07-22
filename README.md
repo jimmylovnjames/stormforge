@@ -57,8 +57,9 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 | POST | `/api/tasks/complete` | Executor submits results |
 | GET | `/api/tasks/status/:scanId` | View all tasks for a scan |
 | GET | `/api/findings/:program` | Stored findings |
-| GET | `/api/report/:program` | Markdown disclosure draft |
-| GET | `/api/triage/:program` | Prioritized submit-first queue (JSON; `?format=md`, `?ready=1`, `?limit=N`) |
+| GET | `/api/report/:program` | Markdown disclosure draft (includes correlated attack chains) |
+| GET | `/api/triage/:program` | Prioritized submit-first queue (JSON; `?format=md`, `?ready=1`, `?limit=N`; includes attack chains) |
+| GET | `/api/chains/:program` | Correlated attack-chain composites only (`?format=md`) |
 | GET | `/api/oast/status` | OAST config + tracked-payload counts |
 | POST | `/api/oast/poll` | Harvest + correlate collaborator interactions (auth required) |
 | GET | `/api/oast/results/:program` | Emitted OAST payloads + correlated hits for a program |

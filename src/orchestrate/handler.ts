@@ -5,6 +5,7 @@ import type { Env, Finding, Scope, ToolName, ToolTask } from '../types.js';
 import { parseOrchestrateMessage, helpText, type ParsedCommand } from './commands.js';
 import { partitionByScope, evaluateScope, assertInScope } from '../scope/scope-guard.js';
 import { FindingsStore } from '../findings/store.js';
+import { deriveAttackChains } from '../findings/attack-chains.js';
 import { draftDisclosure } from '../report/drafter.js';
 import { planAttackSurface } from '../planning/vuln-planner.js';
 import { auditLog, listAuditEvents } from '../audit/log.js';
@@ -119,9 +120,33 @@ export async function handleParsedCommand(
         outOfScope: [],
         authorized: true,
       };
-      const md = draftDisclosure(findings, scope, { submitReadyOnly: true });
+      const withChains = [...findings, ...deriveAttackChains(findings)];
+      const md = draftDisclosure(withChains, scope, { submitReadyOnly: true });
       const text = md.length > 3500 ? `${md.slice(0, 3500)}\n…(truncated)` : md;
       return { ok: true, text, data: { markdown: md } };
+    }
+
+    case 'chains': {
+      if (cmd.error) return { ok: false, text: cmd.error, status: 400 };
+      const program = cmd.program!;
+      const store = new FindingsStore(env.STORMFORGE_KV);
+      const findings = await store.getAll(program);
+      const chains = deriveAttackChains(findings);
+      if (chains.length === 0) {
+        return {
+          ok: true,
+          text: `No correlated attack chains for ${program} yet (need co-occurring signals on the same domain).`,
+          data: { chains: [] },
+        };
+      }
+      const text = chains
+        .map((c) => `• [${c.severity}] ${c.checkId} — ${c.title} @ ${c.target}`)
+        .join('\n');
+      return {
+        ok: true,
+        text: `Attack chains for ${program} (${chains.length}):\n${text}`,
+        data: { chains },
+      };
     }
 
     case 'status': {

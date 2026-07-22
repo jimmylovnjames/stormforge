@@ -7,6 +7,7 @@
 import type { Env, Finding, Scope, ToolName } from '../types.js';
 import { evaluateScope } from '../scope/scope-guard.js';
 import { cvssFor } from '../report/cvss.js';
+import { chainFollowUpTasks } from '../findings/attack-chains.js';
 
 export interface PlannedTask {
   tool: ToolName;
@@ -449,6 +450,13 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
         rationale: `Authz follow-up after ${f.checkId}`,
       });
     }
+  }
+
+  // Cross-finding attack-chain follow-ups (appended within the shared cap so
+  // per-finding tasks are never displaced). Fires only when signals correlate.
+  for (const t of chainFollowUpTasks(findings, scope)) {
+    if (tasks.length >= MAX_EVOLVED_TASKS) break;
+    push(t);
   }
 
   return {
