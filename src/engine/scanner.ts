@@ -32,6 +32,10 @@ import {
   ACTIVE_PARAM_HEADER,
 } from '../recon/active-probes.js';
 import { auditLog } from '../audit/log.js';
+import { oastConfigured, parseCollaborator, newOastToken, buildOastPayload } from '../oast/collaborator.js';
+import { OastStore } from '../oast/store.js';
+import { detectSsrfCandidates } from '../detect/checks/ssrf-candidate.js';
+import type { OastPayload } from '../oast/types.js';
 import type { Scope } from '../types.js';
 
 export interface ScanProgress {
@@ -191,6 +195,49 @@ export async function runScan(
         probes.push(p);
         probed++;
       });
+    }
+
+    // 7d. OAST: inject unique canaries into SSRF candidates (param + header
+    //     vectors) so blind interactions can be correlated later via /api/oast/poll.
+    if (oastConfigured(env)) {
+      const cfg = parseCollaborator(env);
+      if (cfg) {
+        const store = new OastStore(env.STORMFORGE_KV);
+        const emissions = buildOastEmissions(collectSsrfCandidateUrls(allowed, probes), 24);
+        if (emissions.length) {
+          onProgress?.({ phase: 'oast-ssrf', probed, total: probed + emissions.length, findings: 0 });
+          let emitted = 0;
+          await mapWithConcurrency(emissions, Math.min(4, concurrency), async (em) => {
+            if (!evaluateScope(em.requestUrl, req.scope).allowed) return;
+            const token = newOastToken();
+            const payload = buildOastPayload(cfg, token);
+            const record: OastPayload = {
+              token,
+              url: payload.url,
+              host: payload.host,
+              scanId,
+              program: req.scope.program,
+              target: em.target,
+              vector: em.vector,
+              createdAt: new Date().toISOString(),
+            };
+            await store.registerPayload(record);
+            const requestUrl = em.injectIntoQuery
+              ? setParam(em.requestUrl, em.paramName!, payload.url)
+              : em.requestUrl;
+            const headers = em.header ? { [em.header]: em.headerUsesHost ? payload.host : payload.url } : undefined;
+            // Fire-and-forget: the OAST hit (not this response) is the signal.
+            await client.probe(requestUrl, { headers, redirect: false }).catch(() => undefined);
+            emitted++;
+          });
+          await auditLog(env, {
+            action: 'plan.attack',
+            detail: `OAST emitted ${emitted} SSRF canary payload(s)`,
+            program: req.scope.program,
+            meta: { scanId, oast: true, emitted },
+          });
+        }
+      }
     }
   }
 
@@ -374,6 +421,86 @@ function pickActiveBaseUrls(seedTargets: string[], probes: ProbeResult[]): strin
     }
   }
   return [...bases];
+}
+
+interface OastEmission {
+  /** The endpoint being tested (for the payload record). */
+  target: string;
+  /** Vector label, e.g. "param:url" or "header:Referer". */
+  vector: string;
+  /** URL the probe is sent to (param injected at emit time, or base for headers). */
+  requestUrl: string;
+  injectIntoQuery: boolean;
+  paramName?: string;
+  header?: string;
+  /** When true the header carries the bare callback host (not the full URL). */
+  headerUsesHost?: boolean;
+}
+
+/** URLs (seeds + probed) that expose SSRF-candidate params, with their params. */
+function collectSsrfCandidateUrls(
+  seedTargets: string[],
+  probes: ProbeResult[],
+): Array<{ url: string; params: string[] }> {
+  const map = new Map<string, Set<string>>();
+  const consider = (u: string) => {
+    const cands = detectSsrfCandidates(u);
+    if (!cands.length) return;
+    const set = map.get(u) ?? new Set<string>();
+    for (const c of cands) set.add(c.param);
+    map.set(u, set);
+  };
+  for (const t of seedTargets) consider(t.includes('://') ? t : `https://${t}`);
+  for (const p of probes) {
+    if (p.error) continue;
+    consider(p.finalUrl ?? p.url);
+  }
+  return [...map.entries()].map(([url, set]) => ({ url, params: [...set] }));
+}
+
+/** Plan OAST emissions: per-param injections first, then a few header vectors. */
+function buildOastEmissions(
+  candidates: Array<{ url: string; params: string[] }>,
+  cap: number,
+): OastEmission[] {
+  const out: OastEmission[] = [];
+  for (const c of candidates) {
+    for (const param of c.params) {
+      if (out.length >= cap) return out;
+      out.push({ target: c.url, vector: `param:${param}`, requestUrl: c.url, injectIntoQuery: true, paramName: param });
+    }
+  }
+  // Header-based SSRF vectors on distinct in-scope origins (bounded).
+  const origins = new Set<string>();
+  for (const c of candidates) {
+    try {
+      origins.add(`${new URL(c.url).origin}/`);
+    } catch {
+      /* skip */
+    }
+  }
+  const HEADER_VECTORS: Array<{ header: string; usesHost?: boolean }> = [
+    { header: 'referer' },
+    { header: 'x-original-url' },
+    { header: 'x-forwarded-for', usesHost: true },
+  ];
+  for (const origin of [...origins].slice(0, 3)) {
+    for (const hv of HEADER_VECTORS) {
+      if (out.length >= cap) return out;
+      out.push({ target: origin, vector: `header:${hv.header}`, requestUrl: origin, injectIntoQuery: false, header: hv.header, headerUsesHost: hv.usesHost });
+    }
+  }
+  return out;
+}
+
+function setParam(url: string, name: string, value: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.set(name, value);
+    return u.toString();
+  } catch {
+    return url;
+  }
 }
 
 /** Registrable (apex) domains for in-scope seed targets, de-duplicated. */

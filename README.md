@@ -59,6 +59,9 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 | GET | `/api/findings/:program` | Stored findings |
 | GET | `/api/report/:program` | Markdown disclosure draft |
 | GET | `/api/triage/:program` | Prioritized submit-first queue (JSON; `?format=md`, `?ready=1`, `?limit=N`) |
+| GET | `/api/oast/status` | OAST config + tracked-payload counts |
+| POST | `/api/oast/poll` | Harvest + correlate collaborator interactions (auth required) |
+| GET | `/api/oast/results/:program` | Emitted OAST payloads + correlated hits for a program |
 | GET | `/api/audit` | Recent scope/task decisions (auth required) |
 
 ### Grok mobile
@@ -162,6 +165,30 @@ npx wrangler deploy
 npx wrangler secret put EXECUTOR_SECRET
 npx wrangler secret put LLM_PLANNER_API_KEY  # optional
 ```
+
+## OAST (out-of-band SSRF confirmation)
+
+RoE-gated, same switch as active testing. Set the collaborator base as a secret:
+
+```bash
+npx wrangler secret put OAST_COLLABORATOR_ENDPOINT
+```
+
+**Value format** (one of):
+
+- `https://collab.example.com` — StormForge polls `https://collab.example.com/poll` and callbacks land on `<token>.collab.example.com`.
+- `https://poll.example.com/base|callback.example.com` — poll `https://poll.example.com/base/poll`, callbacks on `<token>.callback.example.com` (use when the poll API host differs from the callback domain).
+
+**Collaborator contract** StormForge expects: `GET {pollBase}/poll?since=<unix_ms>` returns JSON:
+
+```json
+{ "hits": [
+  { "host": "<token>.callback.example.com", "type": "dns|http|https",
+    "remoteAddress": "203.0.113.10", "timestamp": "2026-01-01T00:00:00Z", "path": "/<token>" }
+] }
+```
+
+Correlation is by the `<token>` DNS label (or an explicit `id` field). When active testing is enabled and this secret is set, SSRF candidates receive unique canaries; call `POST /api/oast/poll` (from cron or an autonomous loop) to correlate interactions — a hit raises a submit-ready `ssrf-oast-confirmed` (CWE-918) finding linked to the exact execution, target, and vector.
 
 ## License
 

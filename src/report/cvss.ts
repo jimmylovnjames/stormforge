@@ -59,6 +59,10 @@ const PROFILES: Record<string, Partial<CvssMetrics>> = {
   'open-redirect': { S: 'C', C: 'L', I: 'L', UI: 'R' },
   // Host-header injection — integrity of generated links / cache.
   'host-header-injection': { C: 'L', I: 'L', UI: 'R' },
+  // SSRF candidate — a lead until OAST confirms.
+  'ssrf-candidate': { C: 'L', I: 'N', A: 'N' },
+  // Confirmed (blind) SSRF — network pivot, crosses trust boundary.
+  'ssrf-oast-confirmed': { S: 'C', C: 'H', I: 'L', A: 'N' },
   // CORS credentialed read crosses a trust boundary → Scope changed.
   'cors-misconfig': { S: 'C', C: 'H', UI: 'R' },
   // Cookies / headers / CSP are hardening; require user interaction, low impact.

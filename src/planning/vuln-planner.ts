@@ -428,6 +428,17 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
       });
     }
 
+    // 9b. SSRF candidate → nuclei ssrf pack on the exact parameterized URL.
+    if (/ssrf-candidate/.test(id)) {
+      push({
+        tool: 'nuclei',
+        target,
+        args: { flags: '-severity critical,high,medium -silent -c 15', templates: 'ssrf,exposures,misconfiguration', ...ctx },
+        timeoutSec: 300,
+        rationale: `Nuclei SSRF pack on candidate from ${f.checkId}`,
+      });
+    }
+
     // 10. Auth bypass / IDOR → authz-focused nuclei.
     if (/auth-access-control/.test(id)) {
       push({

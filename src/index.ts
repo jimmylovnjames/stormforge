@@ -10,6 +10,9 @@ import { partitionByScope, assertInScope, evaluateScope } from './scope/scope-gu
 import { FindingsStore } from './findings/store.js';
 import { draftDisclosure } from './report/drafter.js';
 import { prioritizeFindings, draftTriageReport } from './findings/prioritize.js';
+import { OastStore } from './oast/store.js';
+import { pollAndCorrelate } from './oast/poller.js';
+import { oastConfigured, parseCollaborator } from './oast/collaborator.js';
 import { listChecks } from './detect/registry.js';
 import { DASHBOARD_HTML } from './dashboard-html.js';
 import { planAttackSurface } from './planning/vuln-planner.js';
@@ -75,6 +78,19 @@ export default {
       const triageMatch = pathname.match(/^\/api\/triage\/([^/]+)$/);
       if (request.method === 'GET' && triageMatch) {
         return await handleTriage(decodeURIComponent(triageMatch[1]), env, request);
+      }
+
+      if (request.method === 'GET' && pathname === '/api/oast/status') {
+        return await handleOastStatus(env);
+      }
+
+      if (request.method === 'POST' && pathname === '/api/oast/poll') {
+        return await handleOastPoll(request, env);
+      }
+
+      const oastResultsMatch = pathname.match(/^\/api\/oast\/results\/([^/]+)$/);
+      if (request.method === 'GET' && oastResultsMatch) {
+        return await handleOastResults(decodeURIComponent(oastResultsMatch[1]), env);
       }
 
       if (request.method === 'GET' && pathname === '/api/checks') {
@@ -457,6 +473,34 @@ async function handleReport(program: string, env: Env, request: Request): Promis
   };
   const markdown = draftDisclosure(findings, scope, { submitReadyOnly, minSeverity });
   return new Response(markdown, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+}
+
+async function handleOastStatus(env: Env): Promise<Response> {
+  const cfg = parseCollaborator(env);
+  const store = new OastStore(env.STORMFORGE_KV);
+  const tokens = await store.allTokens();
+  const lastPoll = await store.getLastPoll();
+  return json({
+    configured: oastConfigured(env),
+    callbackDomain: cfg?.callbackDomain ?? null,
+    payloadsTracked: tokens.length,
+    lastPollAt: lastPoll ? new Date(lastPoll).toISOString() : null,
+  });
+}
+
+async function handleOastPoll(request: Request, env: Env): Promise<Response> {
+  if (!authenticateOperator(request, env)) {
+    await auditLog(env, { action: 'auth.failed', detail: 'oast poll unauthorized' });
+    return json({ error: 'Unauthorized — set x-executor-secret' }, 401);
+  }
+  const summary = await pollAndCorrelate(env);
+  return json(summary, summary.configured ? 200 : 400);
+}
+
+async function handleOastResults(program: string, env: Env): Promise<Response> {
+  const store = new OastStore(env.STORMFORGE_KV);
+  const results = await store.results(env, program);
+  return json({ program, ...results });
 }
 
 async function handleTriage(program: string, env: Env, request: Request): Promise<Response> {

@@ -228,4 +228,12 @@ export interface Env {
    * active checks (open redirect, host-header reflection). OFF by default.
    */
   ACTIVE_TESTING?: string;
+  /**
+   * OAST collaborator base for out-of-band SSRF/blind confirmation. Set as a
+   * secret. Forms: "https://collab.example.com" or
+   * "https://poll.example.com/base|callback.example.com". When set AND active
+   * testing is enabled, SSRF candidates receive unique canary payloads and
+   * interactions are correlated via /api/oast/poll.
+   */
+  OAST_COLLABORATOR_ENDPOINT?: string;
 }
