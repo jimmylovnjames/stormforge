@@ -257,6 +257,52 @@ const RULES: Rule[] = [
       components: [...cache.slice(0, 1), ...authSurface.slice(0, 1)],
     };
   },
+
+  // Weak CSP + confirmed/candidate XSS reflection → executable XSS.
+  (fs) => {
+    const csp = match(fs, /\bweak-csp\b/);
+    const xss = match(fs, /\bxss-reflection\b/);
+    if (!csp.length || !xss.length) return null;
+    return {
+      ruleId: 'xss-csp',
+      title: 'Weak CSP fails to block reflected XSS',
+      severity: 'high',
+      cwe: 'CWE-79',
+      steps: [
+        `Confirm unescaped reflection at ${xss[0]!.target}`,
+        `Note the weak CSP (${csp[0]!.target}) permits inline/unsafe script execution`,
+        'Deliver a context-appropriate payload that executes in the victim browser (within RoE)',
+      ],
+      remediation:
+        'Encode all reflected input for its context and ship a strict CSP (no unsafe-inline / wildcards; prefer nonces/hashes).',
+      references: ['https://owasp.org/www-community/attacks/xss/'],
+      components: [...xss.slice(0, 1), ...csp.slice(0, 1)],
+      followUp: { templates: 'xss,misconfiguration,cves', rationale: 'Probe XSS payloads behind weak CSP' },
+    };
+  },
+
+  // JWT in browser-readable response + permissive CORS → cross-origin token theft.
+  (fs) => {
+    const jwt = match(fs, /\bjwt-exposure\b/).filter((f) => rank(f.severity) >= rank('medium'));
+    const cors = match(fs, /cors-misconfig/).filter((f) => rank(f.severity) >= rank('medium'));
+    if (!jwt.length || !cors.length) return null;
+    return {
+      ruleId: 'jwt-cors-theft',
+      title: 'Browser-readable JWT + permissive CORS → cross-origin session theft',
+      severity: 'critical',
+      cwe: 'CWE-942',
+      steps: [
+        `Locate the JWT at ${jwt[0]!.target}`,
+        `From an attacker origin, fetch it under the permissive CORS policy (${cors[0]!.target})`,
+        'Replay the stolen JWT against authenticated APIs (within RoE) to demonstrate account takeover',
+      ],
+      remediation:
+        'Do not expose JWTs to JavaScript when avoidable (HttpOnly cookies); never combine credentialed CORS with reflected origins; rotate any exposed tokens.',
+      references: ['https://portswigger.net/web-security/jwt'],
+      components: [...jwt.slice(0, 1), ...cors.slice(0, 1)],
+      followUp: { templates: 'token,exposures,misconfiguration', rationale: 'Confirm JWT exfil / adjacent token leaks' },
+    };
+  },
 ];
 
 /** Derive escalated composite findings by correlating co-occurring signals. */

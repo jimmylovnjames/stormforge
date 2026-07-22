@@ -22,6 +22,8 @@ import { emailSpoofingCheck } from './checks/email-spoofing.js';
 import { openRedirectCheck } from './checks/open-redirect.js';
 import { hostHeaderCheck } from './checks/host-header.js';
 import { ssrfCandidateCheck } from './checks/ssrf-candidate.js';
+import { jwtExposureCheck } from './checks/jwt.js';
+import { xssReflectionCheck } from './checks/xss-reflection.js';
 import { scanSecrets } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -45,6 +47,8 @@ const REGISTRY: Check[] = [
   openRedirectCheck,
   hostHeaderCheck,
   ssrfCandidateCheck,
+  jwtExposureCheck,
+  xssReflectionCheck,
 ];
 
 export function registerCheck(check: Check): void {

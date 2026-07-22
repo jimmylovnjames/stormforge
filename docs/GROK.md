@@ -195,7 +195,7 @@ Set via `wrangler secret put <NAME>` (secrets) or `[vars]` in `wrangler.toml`:
 | `LLM_PLANNER_MODEL` | var | e.g. `grok-4` |
 | `LLM_PLANNER_API_KEY` | secret | Planner API key (optional; heuristic plan used if unset) |
 | `SCAN_MODE` | var | `detect` (passive only) or `hybrid` (passive + dispatch executor) |
-| `ACTIVE_TESTING` | var/secret | **RoE-gated.** `true` enables canary active checks (open-redirect, host-header). OFF by default |
+| `ACTIVE_TESTING` | var/secret | **RoE-gated.** `true` enables canary active checks (open-redirect, host-header, XSS reflection). OFF by default |
 | `OAST_COLLABORATOR_ENDPOINT` | secret | **RoE-gated.** Enables out-of-band SSRF confirmation (see §8) |
 | `ALLOW_INSECURE_EXECUTOR` | var | Local dev only — allows missing `EXECUTOR_SECRET`. Never in prod |
 

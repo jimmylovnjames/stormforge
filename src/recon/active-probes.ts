@@ -42,6 +42,22 @@ export const REDIRECT_PARAMS = [
 /** Headers used to detect host-header injection / cache-poisoning surface. */
 export const HOST_HEADER_NAMES = ['x-forwarded-host', 'x-forwarded-scheme', 'x-forwarded-proto'];
 
+/** Common reflected-XSS parameter names (GET query only). */
+export const XSS_PARAMS = [
+  'q',
+  's',
+  'search',
+  'query',
+  'keyword',
+  'name',
+  'error',
+  'msg',
+  'message',
+  'text',
+  'input',
+  'term',
+];
+
 export interface OpenRedirectProbe {
   url: string;
   param: string;
@@ -51,6 +67,12 @@ export interface OpenRedirectProbe {
 export interface HostHeaderProbe {
   url: string;
   headers: Record<string, string>;
+  canary: string;
+}
+
+export interface XssReflectionProbe {
+  url: string;
+  param: string;
   canary: string;
 }
 
@@ -136,6 +158,30 @@ export function bodyReflectsCanary(body: string, canaryHost = CANARY_HOST): bool
   if (!body) return false;
   const esc = canaryHost.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(?:https?:)?//${esc}\\b`, 'i').test(body);
+}
+
+/**
+ * Build reflected-XSS canary probes. Unique canary per probe so confirmation is
+ * unambiguous; GET-only, in-scope host, bounded by `cap`.
+ */
+export function buildXssReflectionProbes(baseUrls: string[], cap = 12): XssReflectionProbe[] {
+  const out: XssReflectionProbe[] = [];
+  const seen = new Set<string>();
+  const paramsPerUrl = Math.max(1, Math.ceil(cap / Math.max(1, baseUrls.length)));
+  for (const base of baseUrls) {
+    let added = 0;
+    for (const param of XSS_PARAMS) {
+      if (out.length >= cap || added >= paramsPerUrl) break;
+      const canary = `sfXss${cacheBuster()}`;
+      const url = withParam(base, param, canary);
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      out.push({ url, param, canary });
+      added++;
+    }
+    if (out.length >= cap) break;
+  }
+  return out;
 }
 
 function withParam(base: string, key: string, value: string): string | null {

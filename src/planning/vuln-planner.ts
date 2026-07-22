@@ -354,8 +354,8 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
       });
     }
 
-    // 5. Secret leak → secret-confirmation nuclei (tokens + exposures) on origin.
-    if (/secret-exposure/.test(id)) {
+    // 5. Secret / JWT leak → secret-confirmation nuclei (tokens + exposures) on origin.
+    if (/secret-exposure|jwt-exposure/.test(id)) {
       push({
         tool: 'nuclei',
         target: origin,
@@ -401,13 +401,13 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
     }
 
     // 8. Header / cookie / CSP / OAuth / cache / redirect misconfig → misconfig nuclei.
-    if (/cors-misconfig|insecure-cookies|weak-csp|oauth-misconfig|cache-deception|open-redirect|host-header-injection/.test(id)) {
+    if (/cors-misconfig|insecure-cookies|weak-csp|oauth-misconfig|cache-deception|open-redirect|host-header-injection|xss-reflection/.test(id)) {
       push({
         tool: 'nuclei',
         target: origin,
-        args: { flags: '-severity critical,high,medium -silent -c 15', templates: 'misconfiguration,exposures,takeovers', ...ctx },
+        args: { flags: '-severity critical,high,medium -silent -c 15', templates: 'misconfiguration,exposures,takeovers,xss', ...ctx },
         timeoutSec: 240,
-        rationale: `Misconfig pack after ${f.checkId}`,
+        rationale: `Misconfig/XSS pack after ${f.checkId}`,
       });
     }
 

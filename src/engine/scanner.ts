@@ -27,6 +27,7 @@ import {
   activeTestingEnabled,
   buildOpenRedirectProbes,
   buildHostHeaderProbes,
+  buildXssReflectionProbes,
   ACTIVE_MARKER_HEADER,
   ACTIVE_CANARY_HEADER,
   ACTIVE_PARAM_HEADER,
@@ -190,6 +191,21 @@ export async function runScan(
         if (!evaluateScope(url, req.scope).allowed) return;
         const p = await client.probe(url, { headers, redirect: false });
         p.headers[ACTIVE_MARKER_HEADER] = 'host-header';
+        p.headers[ACTIVE_CANARY_HEADER] = canary;
+        attachSignals(p);
+        probes.push(p);
+        probed++;
+      });
+    }
+
+    const xssProbes = buildXssReflectionProbes(activeBases, 12);
+    if (xssProbes.length) {
+      onProgress?.({ phase: 'active-xss-reflection', probed, total: probed + xssProbes.length, findings: 0 });
+      await mapWithConcurrency(xssProbes, Math.min(4, concurrency), async ({ url, param, canary }) => {
+        if (!evaluateScope(url, req.scope).allowed) return;
+        const p = await client.probe(url, { redirect: false });
+        p.headers[ACTIVE_MARKER_HEADER] = 'xss-reflection';
+        p.headers[ACTIVE_PARAM_HEADER] = param;
         p.headers[ACTIVE_CANARY_HEADER] = canary;
         attachSignals(p);
         probes.push(p);
