@@ -6,6 +6,7 @@
 
 import type { Env, Finding, ScanRequest, Scope, ToolTask, ToolTaskResult, ToolName, Severity } from './types.js';
 import { ScanOrchestrator } from './do/scan-orchestrator.js';
+import { SwarmCoordinator } from './do/swarm-coordinator.js';
 import { partitionByScope, assertInScope, evaluateScope } from './scope/scope-guard.js';
 import { FindingsStore } from './findings/store.js';
 import { draftDisclosure } from './report/drafter.js';
@@ -20,12 +21,16 @@ import { planAttackSurface } from './planning/vuln-planner.js';
 import { auditLog, listAuditEvents } from './audit/log.js';
 import { enqueueTasks, leaseBatch } from './tasks/queue.js';
 import { processTaskCompletion } from './tasks/complete-followup.js';
+import { runMaintenanceTick } from './tasks/maintenance.js';
 import { handleOrchestrateMessage } from './orchestrate/handler.js';
 import { buildGrokInstructions } from './orchestrate/commands.js';
 import { MOBILE_HTML } from './orchestrate/mobile-html.js';
 import { buildOpenApi } from './orchestrate/openapi.js';
 
-export { ScanOrchestrator };
+export { ScanOrchestrator, SwarmCoordinator };
+
+/** Stable name for the singleton coordinator DO that drives the autonomy loop. */
+const SWARM_SINGLETON = 'swarm-coordinator-singleton';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -133,12 +138,88 @@ export default {
         return await handlePlanAttack(request, env);
       }
 
+      if (request.method === 'GET' && pathname === '/api/swarm/status') {
+        return await handleSwarmStatus(env);
+      }
+
+      if (request.method === 'POST' && pathname === '/api/swarm/tick') {
+        return await handleSwarmTick(request, env);
+      }
+
       return json({ error: 'Not found' }, 404);
     } catch (e) {
       return json({ error: (e as Error).message }, 500);
     }
   },
+
+  /**
+   * Cron watchdog (see wrangler.toml [triggers]). Runs independently of any
+   * executor or operator: pokes the singleton coordinator so its self-scheduling
+   * alarm is always armed, and runs a direct maintenance tick as a fail-safe in
+   * case the DO was evicted with no pending alarm.
+   */
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runScheduledMaintenance(env));
+  },
 };
+
+async function runScheduledMaintenance(env: Env): Promise<void> {
+  // Preferred path: drive maintenance through the singleton DO (serialized) and
+  // ensure its alarm keeps the sub-minute cadence going between cron ticks.
+  const stub = getSwarmStub(env);
+  if (stub) {
+    try {
+      await stub.fetch('https://swarm/tick');
+      return;
+    } catch (e) {
+      console.error(JSON.stringify({ level: 'error', event: 'cron.coordinator_failed', error: (e as Error).message }));
+    }
+  }
+  // Fail-safe: run maintenance inline so autonomy survives even without the DO.
+  try {
+    const m = await runMaintenanceTick(env);
+    console.log(JSON.stringify({ level: 'info', event: 'cron.tick_inline', ...m }));
+  } catch (e) {
+    console.error(JSON.stringify({ level: 'error', event: 'cron.tick_failed', error: (e as Error).message }));
+  }
+}
+
+function getSwarmStub(env: Env): DurableObjectStub | null {
+  if (!env.SWARM_COORDINATOR) return null;
+  const id = env.SWARM_COORDINATOR.idFromName(SWARM_SINGLETON);
+  return env.SWARM_COORDINATOR.get(id);
+}
+
+async function handleSwarmStatus(env: Env): Promise<Response> {
+  const stub = getSwarmStub(env);
+  if (stub) {
+    const res = await stub.fetch('https://swarm/status');
+    return new Response(await res.text(), {
+      status: res.status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  // No DO bound (e.g. minimal deploy): report live queue stats directly.
+  const metrics = await runMaintenanceTick(env);
+  return json({ ok: true, autopilot: false, coordinator: 'unbound', metrics });
+}
+
+async function handleSwarmTick(request: Request, env: Env): Promise<Response> {
+  if (!authenticateOperator(request, env)) {
+    await auditLog(env, { action: 'auth.failed', detail: 'swarm tick unauthorized' });
+    return json({ error: 'Unauthorized — set x-executor-secret' }, 401);
+  }
+  const stub = getSwarmStub(env);
+  if (stub) {
+    const res = await stub.fetch('https://swarm/tick');
+    return new Response(await res.text(), {
+      status: res.status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  const metrics = await runMaintenanceTick(env);
+  return json({ ok: true, coordinator: 'unbound', metrics });
+}
 
 /** Fail-closed: require EXECUTOR_SECRET unless ALLOW_INSECURE_EXECUTOR=true. */
 export function authenticateExecutor(request: Request, env: Env): boolean {
