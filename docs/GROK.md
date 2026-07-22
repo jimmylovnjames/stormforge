@@ -211,8 +211,10 @@ completions endpoint, `LLM_PLANNER_MODEL=grok-4`, and `LLM_PLANNER_API_KEY` to y
 scope-checked, rate-limited, and canary-only; host-header probes are cache-busted so no
 shared cache is ever poisoned.
 
-- **Open redirect** and **host-header injection** are confirmed via a non-resolving
-  canary and surface as normal findings.
+- **Open redirect**, **host-header injection**, and **XSS reflection** are confirmed via
+  non-resolving / unique canaries and surface as normal findings.
+- **JWT exposure** (passive, always on): decodes client-visible JWTs for `alg=none`,
+  privileged claims, and path-like `kid` values (replaces the old dumb JWT secret regex).
 - **SSRF candidates** (URL/redirect/callback/webhook/file/host params) are tagged
   passively (always on) as `ssrf-candidate` findings and prioritized for OAST.
 - **OAST out-of-band confirmation** (DNS + HTTP): set the collaborator secret:
