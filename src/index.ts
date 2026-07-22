@@ -9,6 +9,7 @@ import { ScanOrchestrator } from './do/scan-orchestrator.js';
 import { partitionByScope, assertInScope, evaluateScope } from './scope/scope-guard.js';
 import { FindingsStore } from './findings/store.js';
 import { draftDisclosure } from './report/drafter.js';
+import { prioritizeFindings, draftTriageReport } from './findings/prioritize.js';
 import { listChecks } from './detect/registry.js';
 import { DASHBOARD_HTML } from './dashboard-html.js';
 import { planAttackSurface } from './planning/vuln-planner.js';
@@ -69,6 +70,11 @@ export default {
       const reportMatch = pathname.match(/^\/api\/report\/([^/]+)$/);
       if (request.method === 'GET' && reportMatch) {
         return await handleReport(decodeURIComponent(reportMatch[1]), env, request);
+      }
+
+      const triageMatch = pathname.match(/^\/api\/triage\/([^/]+)$/);
+      if (request.method === 'GET' && triageMatch) {
+        return await handleTriage(decodeURIComponent(triageMatch[1]), env, request);
       }
 
       if (request.method === 'GET' && pathname === '/api/checks') {
@@ -451,6 +457,28 @@ async function handleReport(program: string, env: Env, request: Request): Promis
   };
   const markdown = draftDisclosure(findings, scope, { submitReadyOnly, minSeverity });
   return new Response(markdown, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+}
+
+async function handleTriage(program: string, env: Env, request: Request): Promise<Response> {
+  const store = new FindingsStore(env.STORMFORGE_KV);
+  const findings = await store.getAll(program);
+  if (findings.length === 0) return json({ error: 'No findings for program' }, 404);
+
+  const url = new URL(request.url);
+  const readyOnly = url.searchParams.get('ready') === '1' || url.searchParams.get('submitReady') === '1';
+  const limitRaw = Number(url.searchParams.get('limit'));
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(500, Math.floor(limitRaw)) : undefined;
+
+  const result = prioritizeFindings(findings);
+  let entries = readyOnly ? result.entries.filter((e) => e.submitReady) : result.entries;
+  if (limit) entries = entries.slice(0, limit);
+  const view = { total: result.total, submitReady: result.submitReady, entries };
+
+  if (url.searchParams.get('format') === 'md') {
+    const md = draftTriageReport({ ...result, entries }, program);
+    return new Response(md, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+  }
+  return json({ program, ...view });
 }
 
 function validateScanRequest(req: ScanRequest): string | null {

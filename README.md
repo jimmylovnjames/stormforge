@@ -56,6 +56,7 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 | GET | `/api/tasks/status/:scanId` | View all tasks for a scan |
 | GET | `/api/findings/:program` | Stored findings |
 | GET | `/api/report/:program` | Markdown disclosure draft |
+| GET | `/api/triage/:program` | Prioritized submit-first queue (JSON; `?format=md`, `?ready=1`, `?limit=N`) |
 | GET | `/api/audit` | Recent scope/task decisions (auth required) |
 
 ### Grok mobile
