@@ -79,6 +79,25 @@ describe('executor helpers', () => {
     expect(hits[0].target).toContain('/admin');
   });
 
+  it('nuclei keeps high-signal info (exposures/tokens) as low, still drops tech noise', () => {
+    const task = { target: 'https://app.acme.com' };
+    const exposure = JSON.stringify({
+      'matched-at': 'https://app.acme.com/.env',
+      'template-id': 'exposed-env-file',
+      info: { name: 'Exposed .env', severity: 'info', tags: ['exposure', 'files'] },
+    });
+    const techInfo = JSON.stringify({
+      host: 'https://app.acme.com',
+      'template-id': 'tech-detect',
+      info: { name: 'tech', severity: 'info', tags: ['tech'] },
+    });
+    const kept = parseNucleiOutput(exposure, task);
+    expect(kept).toHaveLength(1);
+    expect(kept[0].severity).toBe('low');
+    expect(kept[0].target).toContain('/.env');
+    expect(parseNucleiOutput(techInfo, task)).toHaveLength(0);
+  });
+
   it('katana emits per-param URL findings', () => {
     const task = { target: 'https://app.acme.com' };
     const out = parseKatanaOutput(
