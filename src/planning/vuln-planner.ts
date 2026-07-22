@@ -335,7 +335,8 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
       }
     }
 
-    // 4. Exposed API schema / docs / GraphQL → crawl + exposures,graphql,swagger nuclei.
+    // 4. Exposed API schema / docs / GraphQL → crawl + exposures,graphql,swagger nuclei
+    //    + concrete httpx on IDOR-shaped candidate GETs listed in evidence.
     if (/api-schema|swagger|openapi|graphql/.test(id)) {
       push({
         tool: 'katana',
@@ -352,6 +353,17 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
         timeoutSec: 360,
         rationale: `Nuclei exposures on schema/API surface (${templates})`,
       });
+      for (const u of extractUrlsFromText(f.evidence || '').slice(0, 4)) {
+        if (tasks.length >= MAX_EVOLVED_TASKS) break;
+        if (u === target) continue;
+        push({
+          tool: 'httpx',
+          target: u,
+          args: { flags: '-silent -status-code -title -tech-detect', ...ctx },
+          timeoutSec: 90,
+          rationale: `httpx on schema IDOR candidate from ${f.checkId}`,
+        });
+      }
     }
 
     // 5. Secret / JWT leak → secret-confirmation nuclei (tokens + exposures) on origin.

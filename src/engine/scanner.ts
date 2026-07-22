@@ -21,6 +21,7 @@ import {
   buildCacheDeceptionUrls,
   shouldProbeCacheDeception,
 } from '../recon/cache-probes.js';
+import { buildSchemaIdorFollowUps } from '../recon/openapi-extract.js';
 import { DOH_ENDPOINT, parseDohResponse } from '../recon/takeover.js';
 import { EMAIL_DNS_MARKER, txtStringsFromDoh } from '../recon/dns-email.js';
 import {
@@ -127,6 +128,20 @@ export async function runScan(
     onProgress?.({ phase: 'cache-deception', probed, total: probed + cacheUrls.length, findings: 0 });
     await mapWithConcurrency(cacheUrls, Math.min(4, concurrency), async (url) => {
       const p = await client.probe(url, { headers: { origin: PROBE_ORIGIN } });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+    });
+  }
+
+  // 6b. OpenAPI IDOR-shaped path materialization (GET-only, scope-gated).
+  const schemaIdorUrls = buildSchemaIdorFollowUps(probes, req.scope, 20);
+  if (schemaIdorUrls.length) {
+    onProgress?.({ phase: 'schema-idor', probed, total: probed + schemaIdorUrls.length, findings: 0 });
+    await mapWithConcurrency(schemaIdorUrls, Math.min(4, concurrency), async (url) => {
+      const p = await client.probe(url, {
+        headers: { origin: PROBE_ORIGIN, accept: 'application/json, text/plain, */*' },
+      });
       attachSignals(p);
       probes.push(p);
       probed++;
