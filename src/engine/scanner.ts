@@ -22,6 +22,7 @@ import {
   shouldProbeCacheDeception,
 } from '../recon/cache-probes.js';
 import { DOH_ENDPOINT, parseDohResponse } from '../recon/takeover.js';
+import { EMAIL_DNS_MARKER, txtStringsFromDoh } from '../recon/dns-email.js';
 import type { Scope } from '../types.js';
 
 export interface ScanProgress {
@@ -124,6 +125,19 @@ export async function runScan(
     onProgress?.({ phase: 'takeover-doh', probed, total: probed + dohHosts.length, findings: 0 });
     await mapWithConcurrency(dohHosts, Math.min(4, concurrency), async (host) => {
       const synthetic = await lookupTakeoverDns(host);
+      if (synthetic) {
+        probes.push(synthetic);
+        probed++;
+      }
+    });
+  }
+
+  // 7b. Email-auth (SPF/DMARC) DoH TXT lookups for in-scope apex domains (cap).
+  const emailDomains = pickEmailDomains(allowed).slice(0, 5);
+  if (emailDomains.length) {
+    onProgress?.({ phase: 'email-dns', probed, total: probed + emailDomains.length, findings: 0 });
+    await mapWithConcurrency(emailDomains, Math.min(4, concurrency), async (domain) => {
+      const synthetic = await lookupEmailDns(domain);
       if (synthetic) {
         probes.push(synthetic);
         probed++;
@@ -284,6 +298,50 @@ async function lookupTakeoverDns(host: string): Promise<ProbeResult | null> {
   } catch {
     return null;
   }
+}
+
+/** Registrable (apex) domains for in-scope seed targets, de-duplicated. */
+function pickEmailDomains(seedTargets: string[]): string[] {
+  const domains = new Set<string>();
+  for (const t of seedTargets) {
+    let host: string;
+    try {
+      host = hostOf(t);
+    } catch {
+      continue;
+    }
+    const parts = host.split('.').filter(Boolean);
+    if (parts.length >= 2) domains.add(parts.slice(-2).join('.'));
+  }
+  return [...domains];
+}
+
+/** DoH TXT lookup for SPF (apex) + DMARC (_dmarc) → synthetic email-DNS probe. */
+async function lookupEmailDns(domain: string): Promise<ProbeResult | null> {
+  try {
+    const [spfTxts, dmarcTxts] = await Promise.all([
+      dohTxt(domain),
+      dohTxt(`_dmarc.${domain}`),
+    ]);
+    return {
+      url: `https://${domain}/`,
+      method: 'GET',
+      status: 200,
+      headers: { 'x-stormforge-dns': EMAIL_DNS_MARKER, 'content-type': 'application/json' },
+      body: JSON.stringify({ domain, spfTxts, dmarcTxts }),
+      elapsedMs: 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function dohTxt(name: string): Promise<string[]> {
+  const url = `${DOH_ENDPOINT}?name=${encodeURIComponent(name)}&type=TXT`;
+  const res = await fetch(url, { headers: { accept: 'application/dns-json' } });
+  if (!res.ok) return [];
+  const json = (await res.json()) as { Answer?: Array<{ type: number; data: string }> };
+  return txtStringsFromDoh(json);
 }
 
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */

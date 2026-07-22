@@ -53,6 +53,8 @@ const PROFILES: Record<string, Partial<CvssMetrics>> = {
   'debug-disclosure': { C: 'H' },
   // Directory listing discloses file inventory.
   'directory-listing': { C: 'L' },
+  // Email spoofing impacts integrity (forged mail), needs a victim to act.
+  'email-spoofing': { C: 'N', I: 'L', A: 'N', UI: 'R' },
   // CORS credentialed read crosses a trust boundary → Scope changed.
   'cors-misconfig': { S: 'C', C: 'H', UI: 'R' },
   // Cookies / headers / CSP are hardening; require user interaction, low impact.
