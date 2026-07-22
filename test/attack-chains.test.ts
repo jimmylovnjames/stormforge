@@ -102,12 +102,32 @@ describe('deriveAttackChains — major rules', () => {
     expect(chains.find((c) => c.checkId === 'chain-ssrf-cloud-pivot')!.severity).toBe('critical');
   });
 
-  it('fires takeover-cookie-theft for subdomain takeover + insecure cookies', () => {
+  it('fires takeover-cookie-theft for subdomain takeover + broadly-scoped cookies', () => {
     const chains = deriveAttackChains([
       finding({ checkId: 'subdomain-takeover', target: 'https://dangling.acme.com/', severity: 'high' }),
-      finding({ checkId: 'insecure-cookies', target: 'https://www.acme.com/', severity: 'medium' }),
+      finding({
+        checkId: 'insecure-cookies',
+        target: 'https://www.acme.com/',
+        severity: 'medium',
+        title: 'Session cookie "sid" scoped to parent Domain=.acme.com',
+        evidence: 'URL: https://www.acme.com/\nSet-Cookie: sid=abc; Domain=.acme.com\nScope: broad-domain\nDomain: .acme.com',
+      }),
     ]);
     expect(chains.some((c) => c.checkId === 'chain-takeover-cookie-theft')).toBe(true);
+  });
+
+  it('does not fire takeover-cookie-theft for mere missing-Secure cookies', () => {
+    const chains = deriveAttackChains([
+      finding({ checkId: 'subdomain-takeover', target: 'https://dangling.acme.com/', severity: 'high' }),
+      finding({
+        checkId: 'insecure-cookies',
+        target: 'https://www.acme.com/',
+        severity: 'medium',
+        title: 'Cookie "sid" set without Secure',
+        evidence: 'URL: https://www.acme.com/\nSet-Cookie: sid=abc\nDomain: (host-only)\nSameSite: (absent)',
+      }),
+    ]);
+    expect(chains.some((c) => c.checkId === 'chain-takeover-cookie-theft')).toBe(false);
   });
 
   it('fires schema-idor for API schema + auth-access-control', () => {

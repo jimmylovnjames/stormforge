@@ -70,3 +70,9 @@ LLM_PLANNER_MODEL = ""
 # Format: "https://collab.example.com"  OR  "https://poll.example.com/base|callback.example.com".
 # When set AND active testing is on, SSRF candidates get unique canaries; poll
 # via POST /api/oast/poll to correlate DNS/HTTP interactions. See README "OAST".
+#
+# Authenticated differential probing (secrets, optional):
+#   npx wrangler secret put SCAN_COOKIE
+#   npx wrangler secret put SCAN_AUTHORIZATION   # e.g. "Bearer eyJ…"
+# When set AND scope.authorized, dual-probes auth surfaces (anonymous vs session)
+# to confirm access-control deltas. Operator-supplied credentials only.

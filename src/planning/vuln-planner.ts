@@ -452,8 +452,8 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
       });
     }
 
-    // 10. Auth bypass / IDOR → authz-focused nuclei.
-    if (/auth-access-control/.test(id)) {
+    // 10. Auth bypass / IDOR / differential → authz-focused nuclei.
+    if (/auth-access-control|auth-differential/.test(id)) {
       push({
         tool: 'nuclei',
         target: origin,

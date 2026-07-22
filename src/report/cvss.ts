@@ -77,6 +77,8 @@ const PROFILES: Record<string, Partial<CvssMetrics>> = {
   'cache-deception': { C: 'H', UI: 'R' },
   // Auth bypass / IDOR — direct confidentiality (and integrity when admin).
   'auth-access-control': { C: 'H', I: 'L' },
+  // Authenticated differential — confirmed session-gated data disclosure.
+  'auth-differential': { C: 'H', I: 'L' },
   // OAuth token leak / open redirect — token theft, UI-driven.
   'oauth-misconfig': { C: 'H', UI: 'R' },
   // Subdomain takeover — attacker fully controls a host → Scope changed.
