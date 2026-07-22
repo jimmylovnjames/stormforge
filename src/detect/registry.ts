@@ -19,6 +19,8 @@ import { cloudBucketCheck } from './checks/cloud-bucket.js';
 import { debugDisclosureCheck } from './checks/debug-disclosure.js';
 import { directoryListingCheck } from './checks/directory-listing.js';
 import { emailSpoofingCheck } from './checks/email-spoofing.js';
+import { openRedirectCheck } from './checks/open-redirect.js';
+import { hostHeaderCheck } from './checks/host-header.js';
 import { scanSecrets } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -39,6 +41,8 @@ const REGISTRY: Check[] = [
   debugDisclosureCheck,
   directoryListingCheck,
   emailSpoofingCheck,
+  openRedirectCheck,
+  hostHeaderCheck,
 ];
 
 export function registerCheck(check: Check): void {

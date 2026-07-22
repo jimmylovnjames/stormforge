@@ -222,4 +222,10 @@ export interface Env {
    * Production must leave this unset/false — auth fails closed.
    */
   ALLOW_INSECURE_EXECUTOR?: string;
+  /**
+   * RoE-GATED active testing. When "true" (or SCAN_MODE contains "active") AND
+   * the scope is authorized, the scanner runs canary-based, non-destructive
+   * active checks (open redirect, host-header reflection). OFF by default.
+   */
+  ACTIVE_TESTING?: string;
 }

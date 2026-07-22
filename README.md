@@ -5,6 +5,8 @@
 Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 
 > **AUTHORIZED TARGETS ONLY.** You are responsible for staying within each program's rules of engagement.
+>
+> **Active testing is OFF by default.** Passive checks are always safe/non-destructive. Canary-based active checks (open redirect, host-header reflection) run only when `ACTIVE_TESTING="true"` (or `SCAN_MODE` contains `active`) **and** the scope is authorized — and even then are GET-only, rate-limited, and cache-busted. Enable only for programs whose RoE permits active testing.
 
 ---
 

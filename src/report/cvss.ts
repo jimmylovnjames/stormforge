@@ -55,6 +55,10 @@ const PROFILES: Record<string, Partial<CvssMetrics>> = {
   'directory-listing': { C: 'L' },
   // Email spoofing impacts integrity (forged mail), needs a victim to act.
   'email-spoofing': { C: 'N', I: 'L', A: 'N', UI: 'R' },
+  // Open redirect — victim-driven, crosses to an attacker origin (scope changed).
+  'open-redirect': { S: 'C', C: 'L', I: 'L', UI: 'R' },
+  // Host-header injection — integrity of generated links / cache.
+  'host-header-injection': { C: 'L', I: 'L', UI: 'R' },
   // CORS credentialed read crosses a trust boundary → Scope changed.
   'cors-misconfig': { S: 'C', C: 'H', UI: 'R' },
   // Cookies / headers / CSP are hardening; require user interaction, low impact.

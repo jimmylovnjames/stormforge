@@ -33,3 +33,10 @@ LLM_PLANNER_MODEL = ""
 #   EXECUTOR_SECRET     — Required shared secret for executor + plan/dispatch
 # Local only: set ALLOW_INSECURE_EXECUTOR = "true" to allow missing secret (never in prod).
 # ALLOW_INSECURE_EXECUTOR = "true"
+#
+# RoE-GATED ACTIVE TESTING — OFF by default. Only enable for programs whose
+# rules of engagement permit active testing. When "true" (or SCAN_MODE contains
+# "active") AND scope.authorized, the scanner runs canary-based, non-destructive
+# active checks: open redirect + host-header reflection (GET-only, rate-limited,
+# cache-busted so no shared cache is poisoned). Leave unset for passive-only.
+# ACTIVE_TESTING = "true"

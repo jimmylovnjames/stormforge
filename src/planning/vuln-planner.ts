@@ -399,8 +399,8 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
       push(sqlmapTask(target, ctx, `sqlmap follow-up from ${f.checkId}`));
     }
 
-    // 8. Header / cookie / CSP / OAuth / cache misconfig → misconfig nuclei.
-    if (/cors-misconfig|insecure-cookies|weak-csp|oauth-misconfig|cache-deception/.test(id)) {
+    // 8. Header / cookie / CSP / OAuth / cache / redirect misconfig → misconfig nuclei.
+    if (/cors-misconfig|insecure-cookies|weak-csp|oauth-misconfig|cache-deception|open-redirect|host-header-injection/.test(id)) {
       push({
         tool: 'nuclei',
         target: origin,

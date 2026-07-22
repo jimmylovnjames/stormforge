@@ -23,6 +23,15 @@ import {
 } from '../recon/cache-probes.js';
 import { DOH_ENDPOINT, parseDohResponse } from '../recon/takeover.js';
 import { EMAIL_DNS_MARKER, txtStringsFromDoh } from '../recon/dns-email.js';
+import {
+  activeTestingEnabled,
+  buildOpenRedirectProbes,
+  buildHostHeaderProbes,
+  ACTIVE_MARKER_HEADER,
+  ACTIVE_CANARY_HEADER,
+  ACTIVE_PARAM_HEADER,
+} from '../recon/active-probes.js';
+import { auditLog } from '../audit/log.js';
 import type { Scope } from '../types.js';
 
 export interface ScanProgress {
@@ -143,6 +152,46 @@ export async function runScan(
         probed++;
       }
     });
+  }
+
+  // 7c. RoE-GATED active checks (canary open-redirect + host-header). OFF unless
+  //     ACTIVE_TESTING=true / SCAN_MODE contains "active" AND scope authorized.
+  if (activeTestingEnabled(env, req.scope)) {
+    const activeBases = pickActiveBaseUrls(allowed, probes).slice(0, 6);
+    await auditLog(env, {
+      action: 'scan.started',
+      detail: `ACTIVE testing enabled (${activeBases.length} base URL(s)) — canary, non-destructive`,
+      program: req.scope.program,
+      meta: { scanId, active: true, bases: activeBases.length },
+    });
+
+    const redirectProbes = buildOpenRedirectProbes(activeBases, 12);
+    if (redirectProbes.length) {
+      onProgress?.({ phase: 'active-open-redirect', probed, total: probed + redirectProbes.length, findings: 0 });
+      await mapWithConcurrency(redirectProbes, Math.min(4, concurrency), async ({ url, param }) => {
+        if (!evaluateScope(url, req.scope).allowed) return;
+        const p = await client.probe(url, { redirect: false });
+        p.headers[ACTIVE_MARKER_HEADER] = 'open-redirect';
+        p.headers[ACTIVE_PARAM_HEADER] = param;
+        attachSignals(p);
+        probes.push(p);
+        probed++;
+      });
+    }
+
+    const hostProbes = buildHostHeaderProbes(activeBases, 8);
+    if (hostProbes.length) {
+      onProgress?.({ phase: 'active-host-header', probed, total: probed + hostProbes.length, findings: 0 });
+      await mapWithConcurrency(hostProbes, Math.min(4, concurrency), async ({ url, headers, canary }) => {
+        if (!evaluateScope(url, req.scope).allowed) return;
+        const p = await client.probe(url, { headers, redirect: false });
+        p.headers[ACTIVE_MARKER_HEADER] = 'host-header';
+        p.headers[ACTIVE_CANARY_HEADER] = canary;
+        attachSignals(p);
+        probes.push(p);
+        probed++;
+      });
+    }
   }
 
   // 8. Run detection checks over all probes.
@@ -298,6 +347,33 @@ async function lookupTakeoverDns(host: string): Promise<ProbeResult | null> {
   } catch {
     return null;
   }
+}
+
+/** In-scope base URLs to run active canary checks against (seeds + redirect-prone paths). */
+function pickActiveBaseUrls(seedTargets: string[], probes: ProbeResult[]): string[] {
+  const bases = new Set<string>();
+  for (const t of seedTargets) {
+    try {
+      const u = new URL(t.includes('://') ? t : `https://${t}`);
+      if (u.pathname && u.pathname !== '/') bases.add(`${u.origin}${u.pathname}`);
+      bases.add(`${u.origin}/`);
+    } catch {
+      /* skip */
+    }
+  }
+  for (const p of probes) {
+    if (bases.size >= 12) break;
+    if (p.error || p.status < 200 || p.status >= 400) continue;
+    try {
+      const u = new URL(p.finalUrl ?? p.url);
+      if (/login|logout|redirect|sso|oauth|auth|account|return|continue/.test(u.pathname.toLowerCase())) {
+        bases.add(`${u.origin}${u.pathname}`);
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  return [...bases];
 }
 
 /** Registrable (apex) domains for in-scope seed targets, de-duplicated. */
