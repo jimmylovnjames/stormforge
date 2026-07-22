@@ -385,8 +385,21 @@ function parseNucleiOutput(stdout, task) {
     try {
       const item = JSON.parse(line);
       const severity = (item.info?.severity || 'info').toLowerCase();
-      const sev = ['info', 'low', 'medium', 'high', 'critical'].includes(severity) ? severity : 'info';
-      if (sev === 'info') continue;
+      let sev = ['info', 'low', 'medium', 'high', 'critical'].includes(severity) ? severity : 'info';
+      if (sev === 'info') {
+        // Most info templates are recon noise, but exposure/token/config/secret
+        // templates are genuine bounty leads — keep those, promoted to low.
+        const tid = String(item['template-id'] || '').toLowerCase();
+        const tags = (Array.isArray(item.info?.tags) ? item.info.tags.join(',') : item.info?.tags || '')
+          .toString()
+          .toLowerCase();
+        const highSignalInfo =
+          /expos|token|secret|cred|backup|config|\.git|\.env|disclos|leak|listing|swagger|graphql|api-?docs|\bidor\b/.test(
+            `${tid} ${tags}`,
+          );
+        if (!highSignalInfo) continue;
+        sev = 'low';
+      }
       const matchedAt = item['matched-at'] || item.matched || item.host || task.target;
       const matcher = item['matcher-name'] || item['matcher_name'] || '';
       const extracted = Array.isArray(item['extracted-results'])

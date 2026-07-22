@@ -10,6 +10,11 @@ import { SwarmCoordinator } from './do/swarm-coordinator.js';
 import { partitionByScope, assertInScope, evaluateScope } from './scope/scope-guard.js';
 import { FindingsStore } from './findings/store.js';
 import { draftDisclosure } from './report/drafter.js';
+import { prioritizeFindings, draftTriageReport } from './findings/prioritize.js';
+import { deriveAttackChains } from './findings/attack-chains.js';
+import { OastStore } from './oast/store.js';
+import { pollAndCorrelate } from './oast/poller.js';
+import { oastConfigured, parseCollaborator } from './oast/collaborator.js';
 import { listChecks } from './detect/registry.js';
 import { DASHBOARD_HTML } from './dashboard-html.js';
 import { planAttackSurface } from './planning/vuln-planner.js';
@@ -74,6 +79,29 @@ export default {
       const reportMatch = pathname.match(/^\/api\/report\/([^/]+)$/);
       if (request.method === 'GET' && reportMatch) {
         return await handleReport(decodeURIComponent(reportMatch[1]), env, request);
+      }
+
+      const triageMatch = pathname.match(/^\/api\/triage\/([^/]+)$/);
+      if (request.method === 'GET' && triageMatch) {
+        return await handleTriage(decodeURIComponent(triageMatch[1]), env, request);
+      }
+
+      const chainsMatch = pathname.match(/^\/api\/chains\/([^/]+)$/);
+      if (request.method === 'GET' && chainsMatch) {
+        return await handleChains(decodeURIComponent(chainsMatch[1]), env, request);
+      }
+
+      if (request.method === 'GET' && pathname === '/api/oast/status') {
+        return await handleOastStatus(env);
+      }
+
+      if (request.method === 'POST' && pathname === '/api/oast/poll') {
+        return await handleOastPoll(request, env);
+      }
+
+      const oastResultsMatch = pathname.match(/^\/api\/oast\/results\/([^/]+)$/);
+      if (request.method === 'GET' && oastResultsMatch) {
+        return await handleOastResults(decodeURIComponent(oastResultsMatch[1]), env);
       }
 
       if (request.method === 'GET' && pathname === '/api/checks') {
@@ -530,8 +558,78 @@ async function handleReport(program: string, env: Env, request: Request): Promis
     outOfScope: [],
     authorized: true,
   };
-  const markdown = draftDisclosure(findings, scope, { submitReadyOnly, minSeverity });
+  // Fold correlated attack chains so composite narratives appear in disclosure drafts.
+  const withChains = [...findings, ...deriveAttackChains(findings)];
+  const markdown = draftDisclosure(withChains, scope, { submitReadyOnly, minSeverity });
   return new Response(markdown, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+}
+
+async function handleOastStatus(env: Env): Promise<Response> {
+  const cfg = parseCollaborator(env);
+  const store = new OastStore(env.STORMFORGE_KV);
+  const tokens = await store.allTokens();
+  const lastPoll = await store.getLastPoll();
+  return json({
+    configured: oastConfigured(env),
+    callbackDomain: cfg?.callbackDomain ?? null,
+    payloadsTracked: tokens.length,
+    lastPollAt: lastPoll ? new Date(lastPoll).toISOString() : null,
+  });
+}
+
+async function handleOastPoll(request: Request, env: Env): Promise<Response> {
+  if (!authenticateOperator(request, env)) {
+    await auditLog(env, { action: 'auth.failed', detail: 'oast poll unauthorized' });
+    return json({ error: 'Unauthorized — set x-executor-secret' }, 401);
+  }
+  const summary = await pollAndCorrelate(env);
+  return json(summary, summary.configured ? 200 : 400);
+}
+
+async function handleOastResults(program: string, env: Env): Promise<Response> {
+  const store = new OastStore(env.STORMFORGE_KV);
+  const results = await store.results(env, program);
+  return json({ program, ...results });
+}
+
+async function handleTriage(program: string, env: Env, request: Request): Promise<Response> {
+  const store = new FindingsStore(env.STORMFORGE_KV);
+  const findings = await store.getAll(program);
+  if (findings.length === 0) return json({ error: 'No findings for program' }, 404);
+
+  const url = new URL(request.url);
+  const readyOnly = url.searchParams.get('ready') === '1' || url.searchParams.get('submitReady') === '1';
+  const limitRaw = Number(url.searchParams.get('limit'));
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(500, Math.floor(limitRaw)) : undefined;
+
+  // Fold correlated attack chains into the queue so composites rank alongside
+  // (and usually above) their component findings.
+  const withChains = [...findings, ...deriveAttackChains(findings)];
+  const result = prioritizeFindings(withChains);
+  let entries = readyOnly ? result.entries.filter((e) => e.submitReady) : result.entries;
+  if (limit) entries = entries.slice(0, limit);
+  const view = { total: result.total, submitReady: result.submitReady, entries };
+
+  if (url.searchParams.get('format') === 'md') {
+    const md = draftTriageReport({ ...result, entries }, program);
+    return new Response(md, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+  }
+  return json({ program, ...view });
+}
+
+async function handleChains(program: string, env: Env, request: Request): Promise<Response> {
+  const store = new FindingsStore(env.STORMFORGE_KV);
+  const findings = await store.getAll(program);
+  const chains = deriveAttackChains(findings);
+  const url = new URL(request.url);
+  if (url.searchParams.get('format') === 'md') {
+    const scope: Scope = { program, platform: 'generic', inScope: [], outOfScope: [], authorized: true };
+    const md = chains.length
+      ? draftDisclosure(chains, scope)
+      : `# Attack chains — ${program}\n\nNo correlated attack chains derived yet.`;
+    return new Response(md, { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+  }
+  return json({ program, count: chains.length, chains });
 }
 
 function validateScanRequest(req: ScanRequest): string | null {

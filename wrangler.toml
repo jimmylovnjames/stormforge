@@ -57,3 +57,16 @@ LLM_PLANNER_MODEL = ""
 #   EXECUTOR_SECRET     — Required shared secret for executor + plan/dispatch
 # Local only: set ALLOW_INSECURE_EXECUTOR = "true" to allow missing secret (never in prod).
 # ALLOW_INSECURE_EXECUTOR = "true"
+#
+# RoE-GATED ACTIVE TESTING — OFF by default. Only enable for programs whose
+# rules of engagement permit active testing. When "true" (or SCAN_MODE contains
+# "active") AND scope.authorized, the scanner runs canary-based, non-destructive
+# active checks: open redirect + host-header reflection (GET-only, rate-limited,
+# cache-busted so no shared cache is poisoned). Leave unset for passive-only.
+# ACTIVE_TESTING = "true"
+#
+# OAST out-of-band SSRF confirmation (secret, not a plain var):
+#   npx wrangler secret put OAST_COLLABORATOR_ENDPOINT
+# Format: "https://collab.example.com"  OR  "https://poll.example.com/base|callback.example.com".
+# When set AND active testing is on, SSRF candidates get unique canaries; poll
+# via POST /api/oast/poll to correlate DNS/HTTP interactions. See README "OAST".

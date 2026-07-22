@@ -37,8 +37,8 @@ const SECRET_RULES: SecretRule[] = [
   { name: 'OpenAI API Key', regex: /\bsk-(?:proj-)?[0-9A-Za-z\-_]{20,}\b/g, severity: 'high' },
   // Crypto material
   { name: 'Private Key Block', regex: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/g, severity: 'critical' },
-  // Lower-signal / generic (kept last; medium/low)
-  { name: 'JWT', regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, severity: 'low' },
+  // Lower-signal / generic (kept last; medium/low).
+  // JWTs are handled by jwt-exposure (decodes alg/claims) — not duplicated here.
   { name: 'Generic API secret assignment', regex: /['"]?(?:api[_-]?key|secret|token|password)['"]?\s*[:=]\s*['"][0-9a-zA-Z\-_]{16,}['"]/gi, severity: 'medium' },
 ];
 

@@ -49,6 +49,24 @@ const PROFILES: Record<string, Partial<CvssMetrics>> = {
   'exposed-files': { C: 'H' },
   'secret-exposure': { C: 'H' },
   'open-cloud-bucket': { C: 'H' },
+  // Debug pages leak internals/secrets (Werkzeug/Django can reach RCE).
+  'debug-disclosure': { C: 'H' },
+  // Directory listing discloses file inventory.
+  'directory-listing': { C: 'L' },
+  // Email spoofing impacts integrity (forged mail), needs a victim to act.
+  'email-spoofing': { C: 'N', I: 'L', A: 'N', UI: 'R' },
+  // Open redirect — victim-driven, crosses to an attacker origin (scope changed).
+  'open-redirect': { S: 'C', C: 'L', I: 'L', UI: 'R' },
+  // Host-header injection — integrity of generated links / cache.
+  'host-header-injection': { C: 'L', I: 'L', UI: 'R' },
+  // SSRF candidate — a lead until OAST confirms.
+  'ssrf-candidate': { C: 'L', I: 'N', A: 'N' },
+  // Confirmed (blind) SSRF — network pivot, crosses trust boundary.
+  'ssrf-oast-confirmed': { S: 'C', C: 'H', I: 'L', A: 'N' },
+  // JWT exposure — confidentiality of session/authz; alg=none escalates via severity default.
+  'jwt-exposure': { C: 'H', UI: 'N' },
+  // Reflected XSS — victim-driven, integrity + confidentiality of the victim session.
+  'xss-reflection': { C: 'L', I: 'L', UI: 'R' },
   // CORS credentialed read crosses a trust boundary → Scope changed.
   'cors-misconfig': { S: 'C', C: 'H', UI: 'R' },
   // Cookies / headers / CSP are hardening; require user interaction, low impact.
@@ -63,6 +81,18 @@ const PROFILES: Record<string, Partial<CvssMetrics>> = {
   'oauth-misconfig': { C: 'H', UI: 'R' },
   // Subdomain takeover — attacker fully controls a host → Scope changed.
   'subdomain-takeover': { S: 'C', C: 'H', I: 'H' },
+
+  // Attack-chain composites (checkId = chain-<ruleId>) — escalated impact.
+  'chain-source-to-secret': { C: 'H', I: 'H' },
+  'chain-debug-to-rce': { C: 'H', I: 'H', A: 'H' },
+  'chain-oauth-token-theft': { C: 'H', UI: 'R' },
+  'chain-cors-cred-theft': { S: 'C', C: 'H', UI: 'R' },
+  'chain-ssrf-cloud-pivot': { S: 'C', C: 'H', I: 'L' },
+  'chain-takeover-cookie-theft': { S: 'C', C: 'H', UI: 'R' },
+  'chain-schema-idor': { C: 'H', I: 'L' },
+  'chain-cache-poison-auth': { C: 'H', UI: 'R' },
+  'chain-xss-csp': { C: 'H', I: 'L', UI: 'R' },
+  'chain-jwt-cors-theft': { S: 'C', C: 'H', UI: 'R' },
 };
 
 /** Default metrics derived from the qualitative severity band. */

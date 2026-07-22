@@ -8,6 +8,7 @@ export type OrchestrateIntent =
   | 'status'
   | 'findings'
   | 'report'
+  | 'chains'
   | 'audit'
   | 'dispatch'
   | 'tasks';
@@ -102,6 +103,13 @@ export function parseOrchestrateMessage(raw: string): ParsedCommand {
       return { intent: 'report', message, authorized, error: 'Usage: report <program>' };
     }
     return { intent: 'report', message, authorized, program: prog };
+  }
+  if (/^\s*chains?\b/i.test(message) || /\bshow chains?\b/i.test(lower) || /\battack chains?\b/i.test(lower)) {
+    const prog = program || extractNamedArg(message, 'chains') || extractNamedArg(message, 'chain');
+    if (!prog || /authorized|=/.test(prog)) {
+      return { intent: 'chains', message, authorized, error: 'Usage: chains <program>' };
+    }
+    return { intent: 'chains', message, authorized, program: prog };
   }
 
   // status / tasks
@@ -230,8 +238,8 @@ Rules:
 - NEVER invent authorization. The word "authorized" MUST appear in the command for plan/scan/dispatch.
 - NEVER target hosts outside the user's stated inScope.
 - Prefer short commands. After each action, summarize scanId / tasks / next step.
-- For findings, ask for program id then call findings/report.
-- Loop: plan/scan → remember scanId → tasks <scanId> (executor progress) → status <scanId> (passive DO) → findings <program>.
+- For findings, ask for program id then call findings/report/chains.
+- Loop: plan/scan → remember scanId → tasks <scanId> (executor progress) → status <scanId> (passive DO) → findings <program> → chains <program>.
 - status = passive Durable Object progress. tasks = remote executor queue for the same scanId (hybrid/plan/dispatch).
 - Executor must be polling /api/tasks/poll or remote work stays pending.
 
@@ -244,6 +252,7 @@ Command cheat-sheet:
 - tasks <scanId>
 - findings <program>
 - report <program>
+- chains <program>
 - audit
 
 If you cannot HTTP POST yourself, give the user the exact curl or tell them to open ${base}/m and paste the command.`;
@@ -262,6 +271,7 @@ export function helpText(baseUrl?: string): string {
     '  tasks <scanId>    ← executor queue (same scanId)',
     '  findings <program>',
     '  report <program>',
+    '  chains <program>   ← correlated attack chains',
     '  audit',
     '',
     'Mutating commands REQUIRE the word "authorized".',
@@ -273,7 +283,7 @@ export function helpText(baseUrl?: string): string {
     .join('\n');
 }
 
-function extractNamedArg(message: string, kind: 'findings' | 'report'): string | undefined {
+function extractNamedArg(message: string, kind: 'findings' | 'report' | 'chains' | 'chain'): string | undefined {
   const re = new RegExp(
     `\\b(?:show\\s+)?${kind}(?:\\s+for)?\\s+([a-z0-9][a-z0-9._-]{1,63})\\b`,
     'i',
@@ -316,7 +326,7 @@ function extractBareHosts(message: string): string[] {
   for (const m of message.match(/(?<![=/])\b[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi) || []) {
     const h = m.toLowerCase();
     if (h.startsWith('program.') || h.includes('=')) continue;
-    if (/^(status|tasks|findings|report|audit|help|plan|scan|dispatch|authorized)$/.test(h)) continue;
+    if (/^(status|tasks|findings|report|chains|chain|audit|help|plan|scan|dispatch|authorized)$/.test(h)) continue;
     if (message.includes(`https://${h}`) || message.includes(`http://${h}`)) continue;
     out.push(h);
   }

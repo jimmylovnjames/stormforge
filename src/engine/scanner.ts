@@ -22,6 +22,21 @@ import {
   shouldProbeCacheDeception,
 } from '../recon/cache-probes.js';
 import { DOH_ENDPOINT, parseDohResponse } from '../recon/takeover.js';
+import { EMAIL_DNS_MARKER, txtStringsFromDoh } from '../recon/dns-email.js';
+import {
+  activeTestingEnabled,
+  buildOpenRedirectProbes,
+  buildHostHeaderProbes,
+  buildXssReflectionProbes,
+  ACTIVE_MARKER_HEADER,
+  ACTIVE_CANARY_HEADER,
+  ACTIVE_PARAM_HEADER,
+} from '../recon/active-probes.js';
+import { auditLog } from '../audit/log.js';
+import { oastConfigured, parseCollaborator, newOastToken, buildOastPayload } from '../oast/collaborator.js';
+import { OastStore } from '../oast/store.js';
+import { detectSsrfCandidates } from '../detect/checks/ssrf-candidate.js';
+import type { OastPayload } from '../oast/types.js';
 import type { Scope } from '../types.js';
 
 export interface ScanProgress {
@@ -129,6 +144,117 @@ export async function runScan(
         probed++;
       }
     });
+  }
+
+  // 7b. Email-auth (SPF/DMARC) DoH TXT lookups for in-scope apex domains (cap).
+  const emailDomains = pickEmailDomains(allowed).slice(0, 5);
+  if (emailDomains.length) {
+    onProgress?.({ phase: 'email-dns', probed, total: probed + emailDomains.length, findings: 0 });
+    await mapWithConcurrency(emailDomains, Math.min(4, concurrency), async (domain) => {
+      const synthetic = await lookupEmailDns(domain);
+      if (synthetic) {
+        probes.push(synthetic);
+        probed++;
+      }
+    });
+  }
+
+  // 7c. RoE-GATED active checks (canary open-redirect + host-header). OFF unless
+  //     ACTIVE_TESTING=true / SCAN_MODE contains "active" AND scope authorized.
+  if (activeTestingEnabled(env, req.scope)) {
+    const activeBases = pickActiveBaseUrls(allowed, probes).slice(0, 6);
+    await auditLog(env, {
+      action: 'scan.started',
+      detail: `ACTIVE testing enabled (${activeBases.length} base URL(s)) — canary, non-destructive`,
+      program: req.scope.program,
+      meta: { scanId, active: true, bases: activeBases.length },
+    });
+
+    const redirectProbes = buildOpenRedirectProbes(activeBases, 12);
+    if (redirectProbes.length) {
+      onProgress?.({ phase: 'active-open-redirect', probed, total: probed + redirectProbes.length, findings: 0 });
+      await mapWithConcurrency(redirectProbes, Math.min(4, concurrency), async ({ url, param }) => {
+        if (!evaluateScope(url, req.scope).allowed) return;
+        const p = await client.probe(url, { redirect: false });
+        p.headers[ACTIVE_MARKER_HEADER] = 'open-redirect';
+        p.headers[ACTIVE_PARAM_HEADER] = param;
+        attachSignals(p);
+        probes.push(p);
+        probed++;
+      });
+    }
+
+    const hostProbes = buildHostHeaderProbes(activeBases, 8);
+    if (hostProbes.length) {
+      onProgress?.({ phase: 'active-host-header', probed, total: probed + hostProbes.length, findings: 0 });
+      await mapWithConcurrency(hostProbes, Math.min(4, concurrency), async ({ url, headers, canary }) => {
+        if (!evaluateScope(url, req.scope).allowed) return;
+        const p = await client.probe(url, { headers, redirect: false });
+        p.headers[ACTIVE_MARKER_HEADER] = 'host-header';
+        p.headers[ACTIVE_CANARY_HEADER] = canary;
+        attachSignals(p);
+        probes.push(p);
+        probed++;
+      });
+    }
+
+    const xssProbes = buildXssReflectionProbes(activeBases, 12);
+    if (xssProbes.length) {
+      onProgress?.({ phase: 'active-xss-reflection', probed, total: probed + xssProbes.length, findings: 0 });
+      await mapWithConcurrency(xssProbes, Math.min(4, concurrency), async ({ url, param, canary }) => {
+        if (!evaluateScope(url, req.scope).allowed) return;
+        const p = await client.probe(url, { redirect: false });
+        p.headers[ACTIVE_MARKER_HEADER] = 'xss-reflection';
+        p.headers[ACTIVE_PARAM_HEADER] = param;
+        p.headers[ACTIVE_CANARY_HEADER] = canary;
+        attachSignals(p);
+        probes.push(p);
+        probed++;
+      });
+    }
+
+    // 7d. OAST: inject unique canaries into SSRF candidates (param + header
+    //     vectors) so blind interactions can be correlated later via /api/oast/poll.
+    if (oastConfigured(env)) {
+      const cfg = parseCollaborator(env);
+      if (cfg) {
+        const store = new OastStore(env.STORMFORGE_KV);
+        const emissions = buildOastEmissions(collectSsrfCandidateUrls(allowed, probes), 24);
+        if (emissions.length) {
+          onProgress?.({ phase: 'oast-ssrf', probed, total: probed + emissions.length, findings: 0 });
+          let emitted = 0;
+          await mapWithConcurrency(emissions, Math.min(4, concurrency), async (em) => {
+            if (!evaluateScope(em.requestUrl, req.scope).allowed) return;
+            const token = newOastToken();
+            const payload = buildOastPayload(cfg, token);
+            const record: OastPayload = {
+              token,
+              url: payload.url,
+              host: payload.host,
+              scanId,
+              program: req.scope.program,
+              target: em.target,
+              vector: em.vector,
+              createdAt: new Date().toISOString(),
+            };
+            await store.registerPayload(record);
+            const requestUrl = em.injectIntoQuery
+              ? setParam(em.requestUrl, em.paramName!, payload.url)
+              : em.requestUrl;
+            const headers = em.header ? { [em.header]: em.headerUsesHost ? payload.host : payload.url } : undefined;
+            // Fire-and-forget: the OAST hit (not this response) is the signal.
+            await client.probe(requestUrl, { headers, redirect: false }).catch(() => undefined);
+            emitted++;
+          });
+          await auditLog(env, {
+            action: 'plan.attack',
+            detail: `OAST emitted ${emitted} SSRF canary payload(s)`,
+            program: req.scope.program,
+            meta: { scanId, oast: true, emitted },
+          });
+        }
+      }
+    }
   }
 
   // 8. Run detection checks over all probes.
@@ -284,6 +410,157 @@ async function lookupTakeoverDns(host: string): Promise<ProbeResult | null> {
   } catch {
     return null;
   }
+}
+
+/** In-scope base URLs to run active canary checks against (seeds + redirect-prone paths). */
+function pickActiveBaseUrls(seedTargets: string[], probes: ProbeResult[]): string[] {
+  const bases = new Set<string>();
+  for (const t of seedTargets) {
+    try {
+      const u = new URL(t.includes('://') ? t : `https://${t}`);
+      if (u.pathname && u.pathname !== '/') bases.add(`${u.origin}${u.pathname}`);
+      bases.add(`${u.origin}/`);
+    } catch {
+      /* skip */
+    }
+  }
+  for (const p of probes) {
+    if (bases.size >= 12) break;
+    if (p.error || p.status < 200 || p.status >= 400) continue;
+    try {
+      const u = new URL(p.finalUrl ?? p.url);
+      if (/login|logout|redirect|sso|oauth|auth|account|return|continue/.test(u.pathname.toLowerCase())) {
+        bases.add(`${u.origin}${u.pathname}`);
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  return [...bases];
+}
+
+interface OastEmission {
+  /** The endpoint being tested (for the payload record). */
+  target: string;
+  /** Vector label, e.g. "param:url" or "header:Referer". */
+  vector: string;
+  /** URL the probe is sent to (param injected at emit time, or base for headers). */
+  requestUrl: string;
+  injectIntoQuery: boolean;
+  paramName?: string;
+  header?: string;
+  /** When true the header carries the bare callback host (not the full URL). */
+  headerUsesHost?: boolean;
+}
+
+/** URLs (seeds + probed) that expose SSRF-candidate params, with their params. */
+function collectSsrfCandidateUrls(
+  seedTargets: string[],
+  probes: ProbeResult[],
+): Array<{ url: string; params: string[] }> {
+  const map = new Map<string, Set<string>>();
+  const consider = (u: string) => {
+    const cands = detectSsrfCandidates(u);
+    if (!cands.length) return;
+    const set = map.get(u) ?? new Set<string>();
+    for (const c of cands) set.add(c.param);
+    map.set(u, set);
+  };
+  for (const t of seedTargets) consider(t.includes('://') ? t : `https://${t}`);
+  for (const p of probes) {
+    if (p.error) continue;
+    consider(p.finalUrl ?? p.url);
+  }
+  return [...map.entries()].map(([url, set]) => ({ url, params: [...set] }));
+}
+
+/** Plan OAST emissions: per-param injections first, then a few header vectors. */
+function buildOastEmissions(
+  candidates: Array<{ url: string; params: string[] }>,
+  cap: number,
+): OastEmission[] {
+  const out: OastEmission[] = [];
+  for (const c of candidates) {
+    for (const param of c.params) {
+      if (out.length >= cap) return out;
+      out.push({ target: c.url, vector: `param:${param}`, requestUrl: c.url, injectIntoQuery: true, paramName: param });
+    }
+  }
+  // Header-based SSRF vectors on distinct in-scope origins (bounded).
+  const origins = new Set<string>();
+  for (const c of candidates) {
+    try {
+      origins.add(`${new URL(c.url).origin}/`);
+    } catch {
+      /* skip */
+    }
+  }
+  const HEADER_VECTORS: Array<{ header: string; usesHost?: boolean }> = [
+    { header: 'referer' },
+    { header: 'x-original-url' },
+    { header: 'x-forwarded-for', usesHost: true },
+  ];
+  for (const origin of [...origins].slice(0, 3)) {
+    for (const hv of HEADER_VECTORS) {
+      if (out.length >= cap) return out;
+      out.push({ target: origin, vector: `header:${hv.header}`, requestUrl: origin, injectIntoQuery: false, header: hv.header, headerUsesHost: hv.usesHost });
+    }
+  }
+  return out;
+}
+
+function setParam(url: string, name: string, value: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.set(name, value);
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+/** Registrable (apex) domains for in-scope seed targets, de-duplicated. */
+function pickEmailDomains(seedTargets: string[]): string[] {
+  const domains = new Set<string>();
+  for (const t of seedTargets) {
+    let host: string;
+    try {
+      host = hostOf(t);
+    } catch {
+      continue;
+    }
+    const parts = host.split('.').filter(Boolean);
+    if (parts.length >= 2) domains.add(parts.slice(-2).join('.'));
+  }
+  return [...domains];
+}
+
+/** DoH TXT lookup for SPF (apex) + DMARC (_dmarc) → synthetic email-DNS probe. */
+async function lookupEmailDns(domain: string): Promise<ProbeResult | null> {
+  try {
+    const [spfTxts, dmarcTxts] = await Promise.all([
+      dohTxt(domain),
+      dohTxt(`_dmarc.${domain}`),
+    ]);
+    return {
+      url: `https://${domain}/`,
+      method: 'GET',
+      status: 200,
+      headers: { 'x-stormforge-dns': EMAIL_DNS_MARKER, 'content-type': 'application/json' },
+      body: JSON.stringify({ domain, spfTxts, dmarcTxts }),
+      elapsedMs: 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function dohTxt(name: string): Promise<string[]> {
+  const url = `${DOH_ENDPOINT}?name=${encodeURIComponent(name)}&type=TXT`;
+  const res = await fetch(url, { headers: { accept: 'application/dns-json' } });
+  if (!res.ok) return [];
+  const json = (await res.json()) as { Answer?: Array<{ type: number; data: string }> };
+  return txtStringsFromDoh(json);
 }
 
 /** Expand seed hosts/URLs into concrete probe URLs across the path lists. */
