@@ -234,7 +234,6 @@ export interface Env {
    * Production must leave this unset/false — auth fails closed.
    */
   ALLOW_INSECURE_EXECUTOR?: string;
-<<<<<<< HEAD
   // ─── Autonomy tunables (see src/tasks/config.ts for defaults) ───────────────
   /** Coordinator alarm interval, seconds (default 30). */
   SWARM_TICK_SEC?: string;
@@ -248,11 +247,10 @@ export interface Env {
   TASK_RETRY_CAP_SEC?: string;
   /** Terminal-task GC age, seconds (default 21600 = 6h). */
   TASK_GC_TTL_SEC?: string;
-=======
   /**
    * RoE-GATED active testing. When "true" (or SCAN_MODE contains "active") AND
    * the scope is authorized, the scanner runs canary-based, non-destructive
-   * active checks (open redirect, host-header reflection). OFF by default.
+   * active checks (open redirect, host-header reflection, XSS). OFF by default.
    */
   ACTIVE_TESTING?: string;
   /**
@@ -263,5 +261,4 @@ export interface Env {
    * interactions are correlated via /api/oast/poll.
    */
   OAST_COLLABORATOR_ENDPOINT?: string;
->>>>>>> origin/main
 }
