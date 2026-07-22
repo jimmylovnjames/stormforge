@@ -261,4 +261,16 @@ export interface Env {
    * interactions are correlated via /api/oast/poll.
    */
   OAST_COLLABORATOR_ENDPOINT?: string;
+  /**
+   * Optional session Cookie header value for authenticated differential probing.
+   * Set as a secret (`wrangler secret put SCAN_COOKIE`). When set AND the scope
+   * is authorized, the scanner dual-probes auth surfaces (unauth vs cookie) to
+   * confirm access-control deltas. Never invents credentials — operator-supplied only.
+   */
+  SCAN_COOKIE?: string;
+  /**
+   * Optional Authorization header value (e.g. "Bearer …") for differential probing.
+   * Set as a secret. Used with or instead of SCAN_COOKIE.
+   */
+  SCAN_AUTHORIZATION?: string;
 }

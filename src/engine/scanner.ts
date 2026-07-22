@@ -22,6 +22,13 @@ import {
   shouldProbeCacheDeception,
 } from '../recon/cache-probes.js';
 import { buildSchemaIdorFollowUps } from '../recon/openapi-extract.js';
+import { buildGraphqlIdorFollowUps } from '../recon/graphql-extract.js';
+import {
+  authSessionConfigured,
+  authProbeHeaders,
+  DIFF_MARKER_HEADER,
+  DIFF_PAIR_HEADER,
+} from '../detect/checks/auth-differential.js';
 import { DOH_ENDPOINT, parseDohResponse } from '../recon/takeover.js';
 import { EMAIL_DNS_MARKER, txtStringsFromDoh } from '../recon/dns-email.js';
 import {
@@ -146,6 +153,59 @@ export async function runScan(
       probes.push(p);
       probed++;
     });
+  }
+
+  // 6c. GraphQL IDOR-shaped Query field materialization (GET-only).
+  const gqlIdorUrls = buildGraphqlIdorFollowUps(probes, req.scope, 16);
+  if (gqlIdorUrls.length) {
+    onProgress?.({ phase: 'graphql-idor', probed, total: probed + gqlIdorUrls.length, findings: 0 });
+    await mapWithConcurrency(gqlIdorUrls, Math.min(4, concurrency), async (url) => {
+      const p = await client.probe(url, {
+        headers: {
+          origin: PROBE_ORIGIN,
+          accept: 'application/json, application/graphql-response+json',
+        },
+      });
+      attachSignals(p);
+      probes.push(p);
+      probed++;
+    });
+  }
+
+  // 6d. Authenticated differential probing (requires SCAN_COOKIE / SCAN_AUTHORIZATION).
+  if (authSessionConfigured(env.SCAN_COOKIE, env.SCAN_AUTHORIZATION) && req.scope.authorized) {
+    const authHeaders = authProbeHeaders(env.SCAN_COOKIE, env.SCAN_AUTHORIZATION);
+    const diffTargets = pickDifferentialTargets(allowed, probes).slice(0, 12);
+    if (diffTargets.length) {
+      await auditLog(env, {
+        action: 'scan.started',
+        detail: `Auth differential enabled (${diffTargets.length} URL(s)) — operator session, GET-only`,
+        program: req.scope.program,
+        meta: { scanId, differential: true, targets: diffTargets.length },
+      });
+      onProgress?.({ phase: 'auth-differential', probed, total: probed + diffTargets.length * 2, findings: 0 });
+      await mapWithConcurrency(diffTargets, Math.min(3, concurrency), async (url) => {
+        if (!evaluateScope(url, req.scope).allowed) return;
+        const pair = url;
+        const unauth = await client.probe(url, {
+          headers: { accept: 'application/json, text/html, */*' },
+        });
+        unauth.headers[DIFF_MARKER_HEADER] = 'unauth';
+        unauth.headers[DIFF_PAIR_HEADER] = pair;
+        attachSignals(unauth);
+        probes.push(unauth);
+        probed++;
+
+        const auth = await client.probe(url, {
+          headers: { ...authHeaders, accept: 'application/json, text/html, */*' },
+        });
+        auth.headers[DIFF_MARKER_HEADER] = 'auth';
+        auth.headers[DIFF_PAIR_HEADER] = pair;
+        attachSignals(auth);
+        probes.push(auth);
+        probed++;
+      });
+    }
   }
 
   // 7. DoH takeover lookups for in-scope hosts (cap).
@@ -452,6 +512,40 @@ function pickActiveBaseUrls(seedTargets: string[], probes: ProbeResult[]): strin
     }
   }
   return [...bases];
+}
+
+/** Auth surfaces worth dual-probing when SCAN_COOKIE / SCAN_AUTHORIZATION is set. */
+function pickDifferentialTargets(seedTargets: string[], probes: ProbeResult[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const consider = (raw: string) => {
+    try {
+      const u = new URL(raw.includes('://') ? raw : `https://${raw}`);
+      const path = u.pathname.toLowerCase();
+      const interesting =
+        path === '/' ||
+        path === '/api' ||
+        /\/(?:api|v\d+|graphql|me|profile|account|settings|dashboard|users?|orders?|admin)(?:\/|$)/i.test(path) ||
+        /[?&]query=/.test(u.search);
+      if (!interesting) return;
+      u.hash = '';
+      const href = u.toString();
+      if (seen.has(href)) return;
+      seen.add(href);
+      out.push(href);
+    } catch {
+      /* skip */
+    }
+  };
+  for (const t of seedTargets) consider(t);
+  for (const p of probes) {
+    if (out.length >= 16) break;
+    if (p.error || p.status === 0) continue;
+    // Prefer schema-idor / graphql-idor follow-ups already probed.
+    if ((p.headers['x-stormforge-diff'] ?? '')) continue;
+    consider(p.finalUrl ?? p.url);
+  }
+  return out;
 }
 
 interface OastEmission {

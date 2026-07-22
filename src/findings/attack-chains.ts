@@ -10,6 +10,7 @@ import type { Finding, Scope, Severity } from '../types.js';
 import { SEVERITY_ORDER } from '../types.js';
 import { makeFindingId } from './id.js';
 import type { PlannedTask } from '../planning/vuln-planner.js';
+import { isBroadScopeCookieFinding } from '../detect/checks/cookies.js';
 
 interface ChainMatch {
   ruleId: string;
@@ -193,7 +194,7 @@ const RULES: Rule[] = [
   // Subdomain takeover + broadly-scoped/cross-site cookies → session theft on parent.
   (fs) => {
     const takeover = match(fs, /subdomain-takeover/);
-    const cookies = match(fs, /insecure-cookies/);
+    const cookies = match(fs, /insecure-cookies/).filter((f) => isBroadScopeCookieFinding(f));
     if (!takeover.length || !cookies.length) return null;
     return {
       ruleId: 'takeover-cookie-theft',
@@ -202,7 +203,7 @@ const RULES: Rule[] = [
       cwe: 'CWE-284',
       steps: [
         `Claim the dangling subdomain (${takeover[0]!.target})`,
-        `Serve attacker content there; domain-scoped/SameSite=None cookies (${cookies[0]!.target}) are sent to it`,
+        `Serve attacker content there; broadly-scoped/cross-site cookies (${cookies[0]!.target}) are sent to it`,
         'Capture session cookies / run same-site attacks against the parent application',
       ],
       remediation:

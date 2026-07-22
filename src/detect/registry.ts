@@ -24,6 +24,7 @@ import { hostHeaderCheck } from './checks/host-header.js';
 import { ssrfCandidateCheck } from './checks/ssrf-candidate.js';
 import { jwtExposureCheck } from './checks/jwt.js';
 import { xssReflectionCheck } from './checks/xss-reflection.js';
+import { authDifferentialCheck } from './checks/auth-differential.js';
 import { scanSecrets } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -38,6 +39,7 @@ const REGISTRY: Check[] = [
   sourcemapCheck,
   oauthMisconfigCheck,
   authAccessCheck,
+  authDifferentialCheck,
   cacheDeceptionCheck,
   subdomainTakeoverCheck,
   cloudBucketCheck,

@@ -89,6 +89,60 @@ export const cookiesCheck: Check = {
         });
       }
 
+      // Parent-domain scope: Domain=.example.com (or Domain=example.com) sends the
+      // cookie to every subdomain — critical for takeover → session theft chains.
+      if (looksSession && isParentDomainScope(attrs.domain, probe.url)) {
+        findings.push({
+          id: makeFindingId(this.id, probe.url, `broad-domain:${name}`),
+          checkId: this.id,
+          title: `Session cookie "${name}" scoped to parent Domain=${attrs.domain}`,
+          severity: 'medium',
+          target: probe.url,
+          description: `Cookie "${name}" sets Domain=${attrs.domain}, so it is sent to every host under that registrable domain. A subdomain takeover (or XSS on any sibling host) can steal this session.`,
+          evidence: `URL: ${probe.url}\nSet-Cookie: ${cookie}\nScope: broad-domain\nDomain: ${attrs.domain}\nSameSite: ${attrs.sameSite ?? '(absent)'}`,
+          reproduction: [
+            `curl -sI ${probe.url}`,
+            `Confirm Domain=${attrs.domain} on session cookie "${name}"`,
+          ],
+          remediation:
+            'Omit Domain (host-only) or use the __Host- prefix; prefer SameSite=Lax/Strict. Never scope session cookies to the parent domain unless every subdomain is equally trusted.',
+          cwe: 'CWE-565',
+          references: [
+            'https://datatracker.ietf.org/doc/html/rfc6265#section-4.1.2.3',
+            'https://cwe.mitre.org/data/definitions/565.html',
+          ],
+          needsManualReview: false,
+          evidenceGrade: 'fingerprint',
+          confidence: 0.85,
+          submitReady: true,
+          source: 'worker',
+          discoveredAt: new Date().toISOString(),
+        });
+      }
+
+      // Cross-site session cookie (SameSite=None;Secure) — usable from attacker origins / dangling hosts.
+      if (looksSession && attrs.sameSite === 'none' && attrs.secure) {
+        findings.push({
+          id: makeFindingId(this.id, probe.url, `samesite-none-secure:${name}`),
+          checkId: this.id,
+          title: `Session cookie "${name}" is SameSite=None;Secure (cross-site)`,
+          severity: 'medium',
+          target: probe.url,
+          description: `Cookie "${name}" is explicitly cross-site (SameSite=None; Secure). Combined with a parent Domain or a dangling subdomain, this enables cross-site session theft.`,
+          evidence: `URL: ${probe.url}\nSet-Cookie: ${cookie}\nScope: cross-site\nSameSite: none\nDomain: ${attrs.domain ?? '(host-only)'}`,
+          reproduction: [`curl -sI ${probe.url}`, `Confirm SameSite=None; Secure on "${name}"`],
+          remediation: 'Use SameSite=Lax or Strict for session cookies unless a concrete cross-site flow requires None; pair with host-only Domain.',
+          cwe: 'CWE-1275',
+          references: ['https://web.dev/samesite-cookies-explained/'],
+          needsManualReview: false,
+          evidenceGrade: 'fingerprint',
+          confidence: 0.8,
+          submitReady: true,
+          source: 'worker',
+          discoveredAt: new Date().toISOString(),
+        });
+      }
+
       const issues: string[] = [];
       if (!attrs.secure) issues.push('missing Secure');
       if (!attrs.httpOnly) issues.push('missing HttpOnly');
@@ -105,7 +159,7 @@ export const cookiesCheck: Check = {
         description: `The cookie "${name}" is set with insecure attributes (${issues.join(', ')}). ${
           looksSession ? 'This appears to be a session/auth cookie, raising the impact.' : ''
         }`,
-        evidence: `URL: ${probe.url}\nSet-Cookie: ${cookie}`,
+        evidence: `URL: ${probe.url}\nSet-Cookie: ${cookie}\nDomain: ${attrs.domain ?? '(host-only)'}\nSameSite: ${attrs.sameSite ?? '(absent)'}`,
         reproduction: [`curl -sI ${probe.url}`, `Inspect the Set-Cookie header for "${name}"`],
         remediation: 'Set Secure, HttpOnly, and an appropriate SameSite attribute on sensitive cookies.',
         cwe: 'CWE-614',
@@ -126,7 +180,7 @@ interface CookieAttrs {
   path?: string;
 }
 
-function parseCookieAttrs(cookie: string): CookieAttrs {
+export function parseCookieAttrs(cookie: string): CookieAttrs {
   const parts = cookie.split(';').map((p) => p.trim());
   const attrs: CookieAttrs = { secure: false, httpOnly: false };
   for (const part of parts.slice(1)) {
@@ -138,6 +192,37 @@ function parseCookieAttrs(cookie: string): CookieAttrs {
     else if (lower.startsWith('path=')) attrs.path = part.split('=')[1]?.trim();
   }
   return attrs;
+}
+
+/** True when Domain scopes the cookie beyond the exact host (parent / leading-dot). */
+export function isParentDomainScope(domain: string | undefined, url: string): boolean {
+  if (!domain) return false;
+  const d = domain.replace(/^\./, '').toLowerCase();
+  if (!d || !d.includes('.')) return false;
+  let host: string;
+  try {
+    host = new URL(url.includes('://') ? url : `https://${url}`).hostname.toLowerCase();
+  } catch {
+    return domain.startsWith('.');
+  }
+  // Domain=example.com or Domain=.example.com on www.example.com / api.example.com
+  if (host === d) return domain.startsWith('.') || host.split('.').length > d.split('.').length;
+  return host === d || host.endsWith(`.${d}`);
+}
+
+/** Finding evidence that indicates broadly scoped / cross-site session cookies. */
+export function isBroadScopeCookieFinding(f: { checkId: string; evidence?: string; title?: string }): boolean {
+  if (f.checkId !== 'insecure-cookies') return false;
+  const blob = `${f.title ?? ''}\n${f.evidence ?? ''}`.toLowerCase();
+  return (
+    /scope:\s*broad-domain/.test(blob) ||
+    /scope:\s*cross-site/.test(blob) ||
+    /broad-domain:/.test(blob) ||
+    /samesite-none-secure:/.test(blob) ||
+    /samesite=none/.test(blob) ||
+    /domain=\./.test(blob) ||
+    /parent domain=/.test(blob)
+  );
 }
 
 /** Split a collapsed Set-Cookie header into individual cookies. */

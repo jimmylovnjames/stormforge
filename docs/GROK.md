@@ -197,6 +197,8 @@ Set via `wrangler secret put <NAME>` (secrets) or `[vars]` in `wrangler.toml`:
 | `SCAN_MODE` | var | `detect` (passive only) or `hybrid` (passive + dispatch executor) |
 | `ACTIVE_TESTING` | var/secret | **RoE-gated.** `true` enables canary active checks (open-redirect, host-header, XSS reflection). OFF by default |
 | `OAST_COLLABORATOR_ENDPOINT` | secret | **RoE-gated.** Enables out-of-band SSRF confirmation (see §8) |
+| `SCAN_COOKIE` | secret | Optional session `Cookie` for authenticated differential probing |
+| `SCAN_AUTHORIZATION` | secret | Optional `Authorization` header (e.g. `Bearer …`) for differential probing |
 | `ALLOW_INSECURE_EXECUTOR` | var | Local dev only — allows missing `EXECUTOR_SECRET`. Never in prod |
 
 To use **Grok as the planner brain**, set `LLM_PLANNER_ENDPOINT` to the xAI chat
@@ -215,6 +217,11 @@ shared cache is ever poisoned.
   non-resolving / unique canaries and surface as normal findings.
 - **JWT exposure** (passive, always on): decodes client-visible JWTs for `alg=none`,
   privileged claims, and path-like `kid` values (replaces the old dumb JWT secret regex).
+- **OpenAPI / GraphQL IDOR fan-out** (passive): materializes sample GETs from exposed
+  specs / introspection Query fields with ID-like args, then runs `auth-access-control`.
+- **Authenticated differential** (optional secrets): set `SCAN_COOKIE` and/or
+  `SCAN_AUTHORIZATION`. When present and scope is authorized, dual-probes auth
+  surfaces (anonymous vs session) and emits `auth-differential` on privilege/data deltas.
 - **SSRF candidates** (URL/redirect/callback/webhook/file/host params) are tagged
   passively (always on) as `ssrf-candidate` findings and prioritized for OAST.
 - **OAST out-of-band confirmation** (DNS + HTTP): set the collaborator secret:
