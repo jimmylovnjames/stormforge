@@ -364,8 +364,8 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
       });
     }
 
-    // 6. Exposed file / bucket / sourcemap → dir-scoped ffuf + exposures nuclei.
-    if (/exposed-files|sourcemap-exposure|open-cloud-bucket/.test(id)) {
+    // 6. Exposed file / bucket / sourcemap / dir listing → dir-scoped ffuf + exposures nuclei.
+    if (/exposed-files|sourcemap-exposure|open-cloud-bucket|directory-listing/.test(id)) {
       const fuzzBase = dirFuzzBase(target) || origin;
       push({
         tool: 'ffuf',
@@ -380,6 +380,17 @@ export function planFromFindings(findings: Finding[], scope: Scope): AttackPlan 
         args: { flags: '-severity critical,high,medium -silent -c 20', templates: 'exposures,misconfiguration,tokens', ...ctx },
         timeoutSec: 300,
         rationale: `Nuclei exposures near ${f.checkId}`,
+      });
+    }
+
+    // 6b. Debug / verbose error page → targeted exposures+tokens nuclei on origin.
+    if (/debug-disclosure/.test(id)) {
+      push({
+        tool: 'nuclei',
+        target: origin,
+        args: { flags: '-severity critical,high,medium -silent -c 20', templates: 'exposures,misconfiguration,tokens', path: safePathOf(target), ...ctx },
+        timeoutSec: 300,
+        rationale: `Nuclei exposures after ${f.checkId}`,
       });
     }
 

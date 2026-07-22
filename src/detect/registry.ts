@@ -16,6 +16,8 @@ import { authAccessCheck } from './checks/auth-access.js';
 import { cacheDeceptionCheck } from './checks/cache-deception.js';
 import { subdomainTakeoverCheck } from './checks/subdomain-takeover.js';
 import { cloudBucketCheck } from './checks/cloud-bucket.js';
+import { debugDisclosureCheck } from './checks/debug-disclosure.js';
+import { directoryListingCheck } from './checks/directory-listing.js';
 import { scanSecrets } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -33,6 +35,8 @@ const REGISTRY: Check[] = [
   cacheDeceptionCheck,
   subdomainTakeoverCheck,
   cloudBucketCheck,
+  debugDisclosureCheck,
+  directoryListingCheck,
 ];
 
 export function registerCheck(check: Check): void {
