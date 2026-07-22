@@ -7,6 +7,23 @@ import { exposedFilesCheck } from './checks/exposed-files.js';
 import { corsCheck } from './checks/cors.js';
 import { cookiesCheck } from './checks/cookies.js';
 import { versionCveCheck } from './checks/version-cve.js';
+import { apiSchemaExposureCheck } from './checks/api-schema-exposure.js';
+import { graphqlIntrospectionCheck } from './checks/graphql-introspection.js';
+import { weakCspCheck } from './checks/weak-csp.js';
+import { sourcemapCheck } from './checks/sourcemap.js';
+import { oauthMisconfigCheck } from './checks/oauth.js';
+import { authAccessCheck } from './checks/auth-access.js';
+import { cacheDeceptionCheck } from './checks/cache-deception.js';
+import { subdomainTakeoverCheck } from './checks/subdomain-takeover.js';
+import { cloudBucketCheck } from './checks/cloud-bucket.js';
+import { debugDisclosureCheck } from './checks/debug-disclosure.js';
+import { directoryListingCheck } from './checks/directory-listing.js';
+import { emailSpoofingCheck } from './checks/email-spoofing.js';
+import { openRedirectCheck } from './checks/open-redirect.js';
+import { hostHeaderCheck } from './checks/host-header.js';
+import { ssrfCandidateCheck } from './checks/ssrf-candidate.js';
+import { jwtExposureCheck } from './checks/jwt.js';
+import { xssReflectionCheck } from './checks/xss-reflection.js';
 import { scanSecrets } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -15,6 +32,23 @@ const REGISTRY: Check[] = [
   corsCheck,
   cookiesCheck,
   versionCveCheck,
+  apiSchemaExposureCheck,
+  graphqlIntrospectionCheck,
+  weakCspCheck,
+  sourcemapCheck,
+  oauthMisconfigCheck,
+  authAccessCheck,
+  cacheDeceptionCheck,
+  subdomainTakeoverCheck,
+  cloudBucketCheck,
+  debugDisclosureCheck,
+  directoryListingCheck,
+  emailSpoofingCheck,
+  openRedirectCheck,
+  hostHeaderCheck,
+  ssrfCandidateCheck,
+  jwtExposureCheck,
+  xssReflectionCheck,
 ];
 
 export function registerCheck(check: Check): void {

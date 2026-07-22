@@ -65,6 +65,8 @@ export MAX_CONCURRENT=3
 node executor.mjs
 ```
 
+Structured JSON logs include `exec_start` / `exec_done` / `exec_error` with the exact command and stdout/stderr previews. Optional: `C2_RETRIES` (default 3), `DEFAULT_TIMEOUT_SEC` (default 300). Local-only escape hatch: `ALLOW_INSECURE_EXECUTOR=true` (must also be set on the Worker).
+
 ## Verify Tools
 
 ```bash

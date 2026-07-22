@@ -40,6 +40,26 @@ describe('draftDisclosure', () => {
     );
     expect(md.indexOf('Critical one')).toBeLessThan(md.indexOf('Low one'));
   });
+
+  it('prefers submitReady findings when requested', () => {
+    const md = draftDisclosure(
+      [
+        { ...finding, title: 'Noise', severity: 'info', submitReady: false },
+        {
+          ...finding,
+          title: 'Ready high',
+          severity: 'high',
+          submitReady: true,
+          needsManualReview: false,
+        },
+      ],
+      scope,
+      { submitReadyOnly: true },
+    );
+    expect(md).toContain('Ready high');
+    expect(md).not.toContain('Noise');
+    expect(md).toMatch(/submitReady/i);
+  });
 });
 
 describe('compareVersions', () => {

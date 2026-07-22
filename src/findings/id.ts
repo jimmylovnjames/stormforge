@@ -2,6 +2,9 @@
 //
 // Two runs that discover the same issue on the same asset with the same
 // evidence must produce the same id, so the store can dedupe across scans.
+// Worker and executor both use this FNV-1a scheme + canonicalizeTarget.
+
+import { canonicalizeEvidenceKey, canonicalizeTarget } from './canonicalize.js';
 
 /** Deterministic short hash (FNV-1a 32-bit) rendered as hex. */
 export function fnv1a(input: string): string {
@@ -15,5 +18,7 @@ export function fnv1a(input: string): string {
 }
 
 export function makeFindingId(checkId: string, target: string, evidenceKey: string): string {
-  return `${checkId}-${fnv1a(`${checkId}|${target}|${evidenceKey}`)}`;
+  const canonTarget = canonicalizeTarget(target) || target;
+  const canonEvidence = canonicalizeEvidenceKey(evidenceKey);
+  return `${checkId}-${fnv1a(`${checkId}|${canonTarget}|${canonEvidence}`)}`;
 }

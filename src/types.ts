@@ -34,6 +34,21 @@ export interface Scope {
   notes?: string;
 }
 
+/**
+ * Structured body signals filled by the scanner for successful (2xx) probes.
+ * Kept optional so unit tests can fabricate bare ProbeResults.
+ */
+export interface BodySignals {
+  kind: 'json' | 'html' | 'yaml' | 'text' | 'empty';
+  openApiPathCount: number;
+  openApiVersion?: string;
+  graphqlIntrospection: boolean;
+  graphqlExplorer: boolean;
+  swaggerUi: boolean;
+  graphqlEndpointHint: boolean;
+  preview: string;
+}
+
 /** Result of a single non-destructive HTTP probe. */
 export interface ProbeResult {
   url: string;
@@ -49,6 +64,11 @@ export interface ProbeResult {
   elapsedMs: number;
   /** Populated when the probe failed (DNS, TLS, timeout, refused-by-scope). */
   error?: string;
+  /**
+   * Parsed body signals for 2xx responses. Set by the scan engine before
+   * detection checks run; checks may recompute via `parseBodySignals` if absent.
+   */
+  signals?: BodySignals;
 }
 
 /** A detection produced by a Check. */
@@ -77,6 +97,16 @@ export interface Finding {
    */
   needsManualReview: boolean;
   discoveredAt: string;
+  /** 0–1 confidence after quality scoring. */
+  confidence?: number;
+  /** How the evidence was obtained. */
+  evidenceGrade?: 'canary' | 'tool-confirmed' | 'fingerprint' | 'heuristic';
+  /** Ready for human-edited bounty submission (never auto-submit). */
+  submitReady?: boolean;
+  /** Canonical form of target for cross-source dedupe. */
+  canonicalTarget?: string;
+  /** Originating component. */
+  source?: 'worker' | 'executor';
 }
 
 /** Interface every detection check implements. Pure and synchronous. */
@@ -104,6 +134,11 @@ export interface ScanRequest {
   targets: string[];
   /** Extra paths to probe on each target host, beyond the default wordlist. */
   extraPaths?: string[];
+  /**
+   * When set (API/orchestrate DO name), the report and hybrid executor tasks
+   * share this id so `status` / `tasks` stay on one scanId.
+   */
+  scanId?: string;
 }
 
 export interface ScanReport {
@@ -149,6 +184,10 @@ export interface ToolTask {
   createdAt: string;
   /** Populated by executor on completion. */
   result?: ToolTaskResult;
+  /** When this running lease expires (ISO); used for reclaim. */
+  leaseExpiresAt?: string;
+  /** How many evolved follow-up hops produced this task (cap re-dispatch). */
+  followUpDepth?: number;
 }
 
 export interface ToolTaskResult {
@@ -159,6 +198,10 @@ export interface ToolTaskResult {
   findings: Finding[];
   durationMs: number;
   completedAt: string;
+  /** True when the process was killed due to timeout. */
+  timedOut?: boolean;
+  /** Structured executor log line for audit. */
+  command?: string;
 }
 
 // ─── Environment bindings ────────────────────────────────────────────────────
@@ -174,4 +217,23 @@ export interface Env {
   LLM_PLANNER_API_KEY?: string;
   /** Shared secret between C2 and executor for auth. */
   EXECUTOR_SECRET?: string;
+  /**
+   * When "true", allow missing EXECUTOR_SECRET (local dev only).
+   * Production must leave this unset/false — auth fails closed.
+   */
+  ALLOW_INSECURE_EXECUTOR?: string;
+  /**
+   * RoE-GATED active testing. When "true" (or SCAN_MODE contains "active") AND
+   * the scope is authorized, the scanner runs canary-based, non-destructive
+   * active checks (open redirect, host-header reflection). OFF by default.
+   */
+  ACTIVE_TESTING?: string;
+  /**
+   * OAST collaborator base for out-of-band SSRF/blind confirmation. Set as a
+   * secret. Forms: "https://collab.example.com" or
+   * "https://poll.example.com/base|callback.example.com". When set AND active
+   * testing is enabled, SSRF candidates receive unique canary payloads and
+   * interactions are correlated via /api/oast/poll.
+   */
+  OAST_COLLABORATOR_ENDPOINT?: string;
 }
