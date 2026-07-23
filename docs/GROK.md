@@ -42,6 +42,7 @@ Body: `{"message":"<command>"}`. Response: `{ "ok": boolean, "text": string, "da
 | `findings <program>` | Stored findings (JSON) |
 | `report <program>` | Markdown disclosure draft (includes attack chains) |
 | `chains <program>` | Correlated attack-chain composites only |
+| `blackswan <program>` | Rarity-weighted multi-step campaign scenarios |
 | `audit` | Recent scope/task decisions |
 
 **Rules the parser enforces (so phrase commands accordingly):**
@@ -63,6 +64,7 @@ status 1a2b3c4d-…            # from a prior scan/plan response
 tasks 1a2b3c4d-…
 findings my-h1
 report my-h1
+blackswan my-h1
 audit
 ```
 
@@ -82,8 +84,8 @@ curl -s -X POST "$BASE/api/orchestrate" \
 3. **Active/tool progress:** `tasks <scanId>` → executor queue state. Remote work only
    advances while an **executor is polling** `GET /api/tasks/poll` (see §6). If tasks stay
    `pending`, tell the user their executor isn't running.
-4. **Collect:** `findings <program>` (JSON), `report <program>` (Markdown), and
-   `chains <program>` (composites).
+4. **Collect:** `findings <program>` (JSON), `report <program>` (Markdown),
+   `chains <program>` (composites), and `blackswan <program>` (campaign scenarios).
 5. **Prioritize:** `GET {BASE}/api/triage/<program>?format=md&ready=1` → ranked, deduped,
    submit-first queue (severity × confidence × CVSS). This is the "what to file first" view.
    Triage and report also fold correlated **attack chains** (composites like
@@ -91,7 +93,11 @@ curl -s -X POST "$BASE/api/orchestrate" \
 6. **Attack chains:** `GET {BASE}/api/chains/<program>` (or `?format=md`) → only the
    derived composites — the "how a hunter would chain these" view. Empty until signals
    co-occur on the same registrable domain.
-7. **OAST (if enabled):** after an active scan, `POST {BASE}/api/oast/poll` to correlate
+7. **Black Swan (special):** `GET {BASE}/api/black-swan/<program>` (or `?format=md`) builds
+   rarity-weighted, multi-step exploit campaigns from co-occurring findings.
+   Add `?blackSwan=1` to `/api/report` or `/api/triage` to include synthetic
+   `black-swan-*` findings in filing workflows.
+8. **OAST (if enabled):** after an active scan, `POST {BASE}/api/oast/poll` to correlate
    out-of-band hits, then `GET {BASE}/api/oast/results/<program>`. A hit becomes a
    critical `ssrf-oast-confirmed` finding (also shows in findings/report/triage/chains).
 
@@ -118,9 +124,10 @@ Auth = `x-executor-secret` where noted. `GET {BASE}/openapi.json` is the importa
 | POST | `/api/tasks/complete` | ✅ | Executor submits results (JSON body, §5) |
 | GET | `/api/tasks/status/:scanId` | – | Tasks for a scan |
 | GET | `/api/findings/:program` | – | Stored findings (JSON) |
-| GET | `/api/report/:program` | – | Markdown disclosure (`?submitReady=1`, `?minSeverity=`) |
-| GET | `/api/triage/:program` | – | Ranked submit queue (`?format=md`, `?ready=1`, `?limit=N`; includes attack chains) |
+| GET | `/api/report/:program` | – | Markdown disclosure (`?submitReady=1`, `?minSeverity=`, `?blackSwan=1`) |
+| GET | `/api/triage/:program` | – | Ranked submit queue (`?format=md`, `?ready=1`, `?limit=N`, `?blackSwan=1`) |
 | GET | `/api/chains/:program` | – | Correlated attack-chain composites only (`?format=md`) |
+| GET | `/api/black-swan/:program` | – | Rarity-weighted campaign scenarios (`?format=md`) |
 | GET | `/api/oast/status` | – | OAST config + tracked-payload counts |
 | POST | `/api/oast/poll` | ✅ | Harvest + correlate collaborator interactions |
 | GET | `/api/oast/results/:program` | – | Emitted OAST payloads + correlated hits |

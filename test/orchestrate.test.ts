@@ -48,6 +48,8 @@ describe('parseOrchestrateMessage', () => {
     expect(parseOrchestrateMessage('report acme-h1').intent).toBe('report');
     expect(parseOrchestrateMessage('chains acme-h1').intent).toBe('chains');
     expect(parseOrchestrateMessage('chains acme-h1').program).toBe('acme-h1');
+    expect(parseOrchestrateMessage('blackswan acme-h1').intent).toBe('blackSwan');
+    expect(parseOrchestrateMessage('blackswan acme-h1').program).toBe('acme-h1');
     expect(parseOrchestrateMessage('audit').intent).toBe('audit');
   });
 
@@ -104,10 +106,12 @@ describe('intent exhaustiveness helper', () => {
       'status',
       'findings',
       'report',
+      'chains',
+      'blackSwan',
       'audit',
       'dispatch',
       'tasks',
     ];
-    expect(intents.length).toBe(9);
+    expect(intents.length).toBe(11);
   });
 });

@@ -57,9 +57,10 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 | POST | `/api/tasks/complete` | Executor submits results |
 | GET | `/api/tasks/status/:scanId` | View all tasks for a scan |
 | GET | `/api/findings/:program` | Stored findings |
-| GET | `/api/report/:program` | Markdown disclosure draft (includes correlated attack chains) |
-| GET | `/api/triage/:program` | Prioritized submit-first queue (JSON; `?format=md`, `?ready=1`, `?limit=N`; includes attack chains) |
+| GET | `/api/report/:program` | Markdown disclosure draft (includes correlated attack chains; `?blackSwan=1` adds Black Swan scenarios) |
+| GET | `/api/triage/:program` | Prioritized submit-first queue (JSON; `?format=md`, `?ready=1`, `?limit=N`; includes attack chains, optional `?blackSwan=1`) |
 | GET | `/api/chains/:program` | Correlated attack-chain composites only (`?format=md`) |
+| GET | `/api/black-swan/:program` | Rarity-weighted campaign scenarios (`?format=md`) |
 | GET | `/api/oast/status` | OAST config + tracked-payload counts |
 | POST | `/api/oast/poll` | Harvest + correlate collaborator interactions (auth required) |
 | GET | `/api/oast/results/:program` | Emitted OAST payloads + correlated hits for a program |
@@ -68,6 +69,11 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 ### Grok mobile
 
 Paste instructions from `/api/grok/instructions` into a Grok Project, or open `/m` on your phone. See [docs/GROK_MOBILE.md](docs/GROK_MOBILE.md).
+
+### Black Swan Engine (special feature)
+
+`/api/black-swan/:program` synthesizes campaign-grade exploit scenarios from multiple co-occurring findings on the same registrable domain.  
+It scores scenarios with a custom momentum model (**severity × confidence × novelty × evidence diversity**) and emits synthetic `black-swan-*` findings when requested in triage/report (`?blackSwan=1`).
 
 ## Quick Start
 
