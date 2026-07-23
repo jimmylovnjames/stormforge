@@ -6,6 +6,7 @@ import { parseOrchestrateMessage, helpText, type ParsedCommand } from './command
 import { partitionByScope, evaluateScope, assertInScope } from '../scope/scope-guard.js';
 import { FindingsStore } from '../findings/store.js';
 import { deriveAttackChains } from '../findings/attack-chains.js';
+import { deriveBlackSwanScenarios } from '../findings/black-swan.js';
 import { draftDisclosure } from '../report/drafter.js';
 import { planAttackSurface } from '../planning/vuln-planner.js';
 import { auditLog, listAuditEvents } from '../audit/log.js';
@@ -146,6 +147,30 @@ export async function handleParsedCommand(
         ok: true,
         text: `Attack chains for ${program} (${chains.length}):\n${text}`,
         data: { chains },
+      };
+    }
+
+    case 'blackSwan': {
+      if (cmd.error) return { ok: false, text: cmd.error, status: 400 };
+      const program = cmd.program!;
+      const store = new FindingsStore(env.STORMFORGE_KV);
+      const findings = await store.getAll(program);
+      const scenarios = deriveBlackSwanScenarios([...findings, ...deriveAttackChains(findings)]);
+      if (scenarios.length === 0) {
+        return {
+          ok: true,
+          text: `No Black Swan scenarios for ${program} yet (need multiple correlated high-signal findings).`,
+          data: { scenarios: [] },
+        };
+      }
+      const text = scenarios
+        .slice(0, 10)
+        .map((s) => `• [${s.severity}] ${s.title} score=${s.score}/100 novelty=${s.novelty} @ ${s.domain}`)
+        .join('\n');
+      return {
+        ok: true,
+        text: `Black Swan scenarios for ${program} (${scenarios.length}):\n${text}`,
+        data: { scenarios },
       };
     }
 

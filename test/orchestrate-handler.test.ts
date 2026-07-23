@@ -77,6 +77,12 @@ describe('handleOrchestrateMessage', () => {
     expect(r.text).toMatch(/No findings/i);
   });
 
+  it('returns empty black swan list when no findings exist', async () => {
+    const r = await handleOrchestrateMessage(testEnv(), 'blackswan lab-x');
+    expect(r.ok).toBe(true);
+    expect(r.text).toMatch(/No Black Swan scenarios/i);
+  });
+
   it('returns audit when empty', async () => {
     const r = await handleOrchestrateMessage(testEnv(), 'audit');
     expect(r.ok).toBe(true);
