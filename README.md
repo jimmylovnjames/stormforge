@@ -19,7 +19,8 @@ Cloudflare Workers (brain/C2) + Remote Node.js Executor (muscle).
 │  • Passive detection (headers, CORS trust bypass, cookies,   │
 │    exposed files, OpenAPI/Swagger, GraphQL introspection,    │
 │    weak CSP, source maps, secrets, OAuth, authz/IDOR,        │
-│    cache deception, subdomain takeover)                      │
+│    cache deception, subdomain takeover, mixed content /      │
+│    missing Subresource Integrity)                            │
 │  • Evolved finding→task fan-out (httpx/nuclei/sqlmap/…)      │
 │  • Task queue (KV-backed leases)                             │
 │  • Findings store + submit-ready report drafter              │
