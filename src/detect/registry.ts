@@ -25,6 +25,7 @@ import { ssrfCandidateCheck } from './checks/ssrf-candidate.js';
 import { jwtExposureCheck } from './checks/jwt.js';
 import { xssReflectionCheck } from './checks/xss-reflection.js';
 import { authDifferentialCheck } from './checks/auth-differential.js';
+import { insecureSubresourceCheck } from './checks/insecure-subresource.js';
 import { scanSecrets } from '../recon/secrets.js';
 
 const REGISTRY: Check[] = [
@@ -51,6 +52,7 @@ const REGISTRY: Check[] = [
   ssrfCandidateCheck,
   jwtExposureCheck,
   xssReflectionCheck,
+  insecureSubresourceCheck,
 ];
 
 export function registerCheck(check: Check): void {
